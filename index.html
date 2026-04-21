@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IELTS Part 2 Generator</title>
+    <link rel="stylesheet" href="./style.css">
+  </head>
+  <body>
+    <div class="app-container">
+      <header>
+        <h1>IELTS Speaking Part 2</h1>
+        <p>AI Answer Generator</p>
+      </header>
+
+      <main class="card">
+        <div class="form-group">
+          <label for="topic">Topic (题目)</label>
+          <input 
+            type="text" 
+            id="topic" 
+            placeholder="e.g. Describe a long journey you are planning to make."
+          />
+        </div>
+
+        <div class="form-group">
+          <label for="keywords">Keywords / Cues (关键词/提示信息)</label>
+          <textarea 
+            id="keywords" 
+            rows="3" 
+            placeholder="e.g. Destination: United States (New York, Denver, San Francisco). Timing: late December. Companion: a friend from Xiamen."
+          ></textarea>
+        </div>
+
+        <button id="generateBtn">Generate Answer</button>
+
+        <div id="loading" class="hidden">
+          <div class="spinner"></div>
+          <span>Drafting your 2-minute speech...</span>
+        </div>
+
+        <div id="resultArea" class="hidden">
+          <h3>Generated Response:</h3>
+          <div id="resultText"></div>
+          <button id="copyBtn" class="secondary-btn">Copy Text</button>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
