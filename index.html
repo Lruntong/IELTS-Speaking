@@ -7,15 +7,38 @@
     <link rel="stylesheet" href="./style.css">
   </head>
   <body>
+    <nav class="top-nav">
+      <div class="nav-title">雅思口语 Part 2</div>
+    </nav>
+
     <div class="app-container">
       <header>
-        <h1>IELTS Speaking Part 2</h1>
         <p>AI Answer Generator</p>
       </header>
 
       <main class="card">
+        <section class="theme-section">
+          <div class="theme-dots" id="themeDots" aria-label="主题配色">
+            <button type="button" class="theme-dot active" data-theme="moss-green" aria-label="moss green"></button>
+            <button type="button" class="theme-dot" data-theme="claude-orange" aria-label="claude orange"></button>
+            <button type="button" class="theme-dot" data-theme="navy-blue" aria-label="navy blue"></button>
+            <button type="button" class="theme-dot" data-theme="soft-pink" aria-label="soft pink"></button>
+            <button type="button" class="theme-dot" data-theme="purple" aria-label="purple"></button>
+          </div>
+        </section>
+
+        <section class="category-section">
+          <p class="category-title">题库分类</p>
+          <div class="category-buttons" id="categoryButtons">
+            <button type="button" class="category-btn active" data-category="person">人</button>
+            <button type="button" class="category-btn" data-category="object">物</button>
+            <button type="button" class="category-btn" data-category="place">地点</button>
+            <button type="button" class="category-btn" data-category="experience">经历</button>
+          </div>
+        </section>
+
         <div class="form-group">
-          <label for="topic">Topic (题目)</label>
+          <label for="topic">题目</label>
           <input 
             type="text" 
             id="topic" 
@@ -24,12 +47,8 @@
         </div>
 
         <div class="form-group">
-          <label for="keywords">Keywords / Cues (关键词/提示信息)</label>
-          <textarea 
-            id="keywords" 
-            rows="3" 
-            placeholder="e.g. Destination: United States (New York, Denver, San Francisco). Timing: late December. Companion: a friend from Xiamen."
-          ></textarea>
+          <label id="keywordsLabel">人物关键词 / 提示信息</label>
+          <div id="structuredKeywords" class="structured-grid"></div>
         </div>
 
         <button id="generateBtn">Generate Answer</button>
@@ -39,13 +58,34 @@
           <span>Drafting your 2-minute speech...</span>
         </div>
 
-        <div id="resultArea" class="hidden">
+        <div id="resultSection" class="hidden">
           <h3>Generated Response:</h3>
           <div id="resultText"></div>
-          <button id="copyBtn" class="secondary-btn">Copy Text</button>
+          <div class="result-actions">
+            <button id="highlightBtn" class="action-btn action-highlight">高亮选中内容</button>
+            <button id="clearHighlightBtn" class="action-btn action-clear">清除所有高亮</button>
+            <button id="mockModeBtn" class="action-btn action-mock">进入模考模式</button>
+            <button id="copyBtn" class="action-btn action-copy">复制答案</button>
+          </div>
         </div>
       </main>
     </div>
-    <script type="module" src="./main.js"></script>
+
+    <div id="mockModal" class="mock-modal hidden">
+      <div class="mock-modal-content">
+        <div class="mock-modal-header">
+          <h3>模考模式关键词</h3>
+          <button id="closeMockModalBtn" class="icon-btn" type="button" aria-label="关闭">×</button>
+        </div>
+        <p class="mock-tip"><strong>OK you can start now!</strong></p>
+        <ul id="mockBulletList" class="mock-bullet-list"></ul>
+        <div class="timer-panel">
+          <div class="timer-label">倒计时</div>
+          <div id="countdownDisplay" class="countdown-display">02:00</div>
+          <button id="startTimerBtn" type="button">开始计时</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/main.js"></script>
   </body>
 </html>
