@@ -1,91 +1,127 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>IELTS Part 2 Generator</title>
-    <link rel="stylesheet" href="./style.css">
+    <title>Speaking, Personally</title>
+    <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <nav class="top-nav">
-      <div class="nav-title">雅思口语 Part 2</div>
-    </nav>
+    <header class="site-header">
+      <a class="brand" href="#practice" aria-label="口语练习首页">Speaking<span>,</span> Personally</a>
+      <nav class="main-nav" aria-label="主导航">
+        <button type="button" class="nav-link active" data-view-target="practiceView">练习</button>
+        <button type="button" class="nav-link" data-view-target="libraryView">我的素材库 <span id="materialCount" class="nav-count">0</span></button>
+      </nav>
+    </header>
 
-    <div class="app-container">
-      <header>
-        <p>AI Answer Generator</p>
-      </header>
+    <main class="page-shell">
+      <section id="practiceView" class="view-section">
+        <div class="page-intro">
+          <p class="eyebrow">IELTS SPEAKING · PART 2</p>
+          <h1>把真实经历，<br />说成自己的英语。</h1>
+          <p>选择一条你的故事，生成可说出口的答案，再用两分钟把它说出来。</p>
+        </div>
 
-      <main class="card">
-        <section class="theme-section">
-          <div class="theme-dots" id="themeDots" aria-label="主题配色">
-            <button type="button" class="theme-dot active" data-theme="moss-green" aria-label="moss green"></button>
-            <button type="button" class="theme-dot" data-theme="claude-orange" aria-label="claude orange"></button>
-            <button type="button" class="theme-dot" data-theme="navy-blue" aria-label="navy blue"></button>
-            <button type="button" class="theme-dot" data-theme="soft-pink" aria-label="soft pink"></button>
-            <button type="button" class="theme-dot" data-theme="purple" aria-label="purple"></button>
+        <div class="practice-layout">
+          <section class="panel setup-panel" aria-labelledby="setupTitle">
+            <div class="panel-heading">
+              <span class="step-number">01</span>
+              <div><p class="eyebrow">PREPARE</p><h2 id="setupTitle">准备这道题</h2></div>
+            </div>
+
+            <div class="form-group">
+              <label for="materialSelect">选一条真实素材 <span>可选</span></label>
+              <select id="materialSelect">
+                <option value="">暂不使用素材库</option>
+              </select>
+              <p id="selectedMaterialInfo" class="field-hint">还没有选择素材。</p>
+            </div>
+
+            <div class="form-group">
+              <label for="topic">雅思 Part 2 题目</label>
+              <input id="topic" type="text" placeholder="例如：Describe a memorable outdoor activity." />
+            </div>
+
+            <div class="form-group compact-group">
+              <label>题目类型</label>
+              <div id="categoryButtons" class="category-buttons">
+                <button type="button" class="category-btn active" data-category="person">人物</button>
+                <button type="button" class="category-btn" data-category="object">物品</button>
+                <button type="button" class="category-btn" data-category="place">地点</button>
+                <button type="button" class="category-btn" data-category="experience">经历</button>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label id="keywordsLabel">补充本题细节 <span>可选</span></label>
+              <div id="structuredKeywords" class="structured-grid"></div>
+            </div>
+            <button id="generateBtn" class="primary-button" type="button">生成我的口语答案 <span>→</span></button>
+            <div id="loading" class="loading hidden"><span class="loading-dot"></span>正在根据你的经历组织答案…</div>
+          </section>
+
+          <section id="answerPanel" class="panel answer-panel" aria-labelledby="answerTitle">
+            <div class="panel-heading">
+              <span class="step-number">02</span>
+              <div><p class="eyebrow">SPEAK</p><h2 id="answerTitle">你的可说版本</h2></div>
+            </div>
+            <div id="answerEmpty" class="answer-empty">先选择素材、填写题目。答案会保留你自己的细节，而不是一篇通用范文。</div>
+            <div id="resultSection" class="hidden">
+              <div id="resultText" class="answer-text"></div>
+              <div class="answer-actions">
+                <button id="readAloudBtn" class="text-button" type="button">领读范文</button>
+                <button id="copyBtn" class="text-button" type="button">复制答案</button>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <section id="recordingSection" class="recording-section hidden" aria-labelledby="recordingTitle">
+          <div class="panel-heading">
+            <span class="step-number">03</span>
+            <div><p class="eyebrow">PRACTISE & REVIEW</p><h2 id="recordingTitle">现在，把它说出来</h2></div>
+          </div>
+          <div class="recording-grid">
+            <div>
+              <p class="recording-instruction">无需逐字背诵。看一眼范文，然后用你自己的方式完成两分钟回答。</p>
+              <div id="countdownDisplay" class="countdown-display">02:00</div>
+              <p id="recordingStatus" class="recording-status">准备好后，开始录音。</p>
+              <button id="recordBtn" class="record-button" type="button"><span class="record-indicator"></span>开始两分钟录音</button>
+              <audio id="audioPlayback" class="audio-playback hidden" controls></audio>
+            </div>
+            <div class="transcript-wrap">
+              <div class="transcript-heading"><h3>实时转写</h3><span>English</span></div>
+              <p id="transcriptText" class="transcript-text">录音后，你说出的英文会显示在这里。</p>
+              <button id="reviewBtn" class="secondary-button" type="button" disabled>生成本次复盘 <span>→</span></button>
+              <div id="reviewLoading" class="loading hidden"><span class="loading-dot"></span>正在复盘你的表达…</div>
+              <div id="reviewPanel" class="review-panel hidden"><h3>本次复盘</h3><div id="reviewText"></div></div>
+              <p class="browser-note">转写使用浏览器的英文语音识别；推荐使用最新版 Chrome，并允许麦克风权限。</p>
+            </div>
           </div>
         </section>
+      </section>
 
-        <section class="category-section">
-          <p class="category-title">题库分类</p>
-          <div class="category-buttons" id="categoryButtons">
-            <button type="button" class="category-btn active" data-category="person">人</button>
-            <button type="button" class="category-btn" data-category="object">物</button>
-            <button type="button" class="category-btn" data-category="place">地点</button>
-            <button type="button" class="category-btn" data-category="experience">经历</button>
+      <section id="libraryView" class="view-section hidden" aria-labelledby="libraryTitle">
+        <div class="library-hero">
+          <div><p class="eyebrow">PERSONAL STORY BANK</p><h1 id="libraryTitle">我的素材库</h1><p>这里存的不是万能模板，而是只有你能说好的真实故事。</p></div>
+          <button id="newMaterialBtn" class="primary-button" type="button">添加真实素材 <span>+</span></button>
+        </div>
+
+        <section id="materialEditor" class="material-editor panel hidden" aria-labelledby="editorTitle">
+          <div class="editor-heading"><h2 id="editorTitle">新建一条素材</h2><button id="closeMaterialEditorBtn" class="icon-button" type="button" aria-label="关闭">×</button></div>
+          <div class="editor-grid">
+            <div class="form-group"><label for="materialTitle">给它一个好记的名称</label><input id="materialTitle" type="text" maxlength="60" placeholder="例如：和爷爷去湖边钓鱼" /></div>
+            <div class="form-group"><label for="materialTags">它适合什么话题？</label><input id="materialTags" type="text" maxlength="100" placeholder="例如：家人，户外，难忘经历" /></div>
           </div>
+          <div class="form-group"><label for="materialStory">写下真实细节</label><textarea id="materialStory" rows="7" maxlength="1500" placeholder="发生在什么时候？和谁？在哪里？发生了什么小意外或转折？你当时和后来分别有什么感受？中文写就可以。"></textarea></div>
+          <div class="editor-actions"><button id="saveMaterialBtn" class="primary-button" type="button">保存素材 <span>→</span></button><button id="cancelMaterialBtn" class="text-button" type="button">取消</button></div>
         </section>
 
-        <div class="form-group">
-          <label for="topic">题目</label>
-          <input 
-            type="text" 
-            id="topic" 
-          
-          />
-        </div>
-
-        <div class="form-group">
-          <label id="keywordsLabel">人物关键词 / 提示信息</label>
-          <div id="structuredKeywords" class="structured-grid"></div>
-        </div>
-
-        <button id="generateBtn">Generate Answer</button>
-
-        <div id="loading" class="hidden">
-          <div class="spinner"></div>
-          <span>Drafting your 2-minute speech...</span>
-        </div>
-
-        <div id="resultSection" class="hidden">
-          <h3>Generated Response:</h3>
-          <div id="resultText"></div>
-          <div class="result-actions">
-            <button id="highlightBtn" class="action-btn action-highlight">高亮选中内容</button>
-            <button id="clearHighlightBtn" class="action-btn action-clear">清除所有高亮</button>
-            <button id="mockModeBtn" class="action-btn action-mock">进入模考模式</button>
-            <button id="copyBtn" class="action-btn action-copy">复制答案</button>
-          </div>
-        </div>
-      </main>
-    </div>
-
-    <div id="mockModal" class="mock-modal hidden">
-      <div class="mock-modal-content">
-        <div class="mock-modal-header">
-          <h3>模考模式关键词</h3>
-          <button id="closeMockModalBtn" class="icon-btn" type="button" aria-label="关闭">×</button>
-        </div>
-        <p class="mock-tip"><strong>OK you can start now!</strong></p>
-        <ul id="mockBulletList" class="mock-bullet-list"></ul>
-        <div class="timer-panel">
-          <div class="timer-label">倒计时</div>
-          <div id="countdownDisplay" class="countdown-display">02:00</div>
-          <button id="startTimerBtn" type="button">开始计时</button>
-        </div>
-      </div>
-    </div>
+        <div class="library-toolbar"><label class="search-box" for="materialSearch">⌕<input id="materialSearch" type="search" placeholder="搜索素材、标签或细节" /></label><p id="librarySummary"></p></div>
+        <div id="materialList" class="material-list" aria-live="polite"></div>
+      </section>
+    </main>
     <script type="module" src="/main.js"></script>
   </body>
 </html>
