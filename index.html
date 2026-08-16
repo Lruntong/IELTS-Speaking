@@ -67,11 +67,18 @@
               <div><p class="eyebrow">SPEAK</p><h2 id="answerTitle">你的可说版本</h2></div>
             </div>
             <div id="answerEmpty" class="answer-empty">先选择素材、填写题目。答案会保留你自己的细节，而不是一篇通用范文。</div>
-            <div id="resultSection" class="hidden">
-              <div id="resultText" class="answer-text"></div>
-              <div class="answer-actions">
-                <button id="readAloudBtn" class="text-button" type="button">领读范文</button>
-                <button id="copyBtn" class="text-button" type="button">复制答案</button>
+              <div id="resultSection" class="hidden">
+                <div id="resultText" class="answer-text"></div>
+                <div class="read-controls" aria-label="领读设置">
+                  <div class="read-control-group"><span>口音</span><button type="button" class="voice-option active" data-accent="en-GB">英音</button><button type="button" class="voice-option" data-accent="en-US">美音</button></div>
+                  <div class="read-control-group"><span>语速</span><button type="button" class="voice-option" data-rate="0.78">慢速</button><button type="button" class="voice-option active" data-rate="0.9">自然</button></div>
+                </div>
+                <p id="readingStatus" class="reading-status">全文领读会使用当前设备可用的英语声音。</p>
+                <div class="answer-actions">
+                  <button id="readAloudBtn" class="text-button" type="button">全文领读</button>
+                  <button id="readSentenceBtn" class="text-button" type="button">逐句领读</button>
+                  <button id="copyBtn" class="text-button" type="button">复制答案</button>
+                </div>
               </div>
             </div>
           </section>
@@ -91,9 +98,10 @@
               <audio id="audioPlayback" class="audio-playback hidden" controls></audio>
             </div>
             <div class="transcript-wrap">
-              <div class="transcript-heading"><h3>实时转写</h3><span>English</span></div>
-              <p id="transcriptText" class="transcript-text">录音后，你说出的英文会显示在这里。</p>
-              <button id="reviewBtn" class="secondary-button" type="button" disabled>生成本次复盘 <span>→</span></button>
+              <div class="transcript-heading"><h3>转写确认</h3><span>English</span></div>
+              <textarea id="transcriptEditor" class="transcript-editor" rows="7" disabled placeholder="录音后，浏览器识别出的英文会显示在这里。"></textarea>
+              <p id="transcriptHint" class="transcript-hint">原始转写不会直接用于复盘；请先检查并确认。</p>
+              <div class="transcript-actions"><button id="confirmTranscriptBtn" class="confirm-button" type="button" disabled>确认转写</button><button id="reviewBtn" class="secondary-button" type="button" disabled>生成本次复盘 <span>→</span></button></div>
               <div id="reviewLoading" class="loading hidden"><span class="loading-dot"></span>正在复盘你的表达…</div>
               <div id="reviewPanel" class="review-panel hidden"><h3>本次复盘</h3><div id="reviewText"></div></div>
               <p class="browser-note">转写使用浏览器的英文语音识别；推荐使用最新版 Chrome，并允许麦克风权限。</p>

@@ -14,13 +14,18 @@ const resultText = $('#resultText');
 const answerEmpty = $('#answerEmpty');
 const loading = $('#loading');
 const readAloudBtn = $('#readAloudBtn');
+const readSentenceBtn = $('#readSentenceBtn');
+const readingStatus = $('#readingStatus');
+const voiceOptions = $$('.voice-option');
 const copyBtn = $('#copyBtn');
 const recordingSection = $('#recordingSection');
 const recordBtn = $('#recordBtn');
 const recordingStatus = $('#recordingStatus');
 const countdownDisplay = $('#countdownDisplay');
 const audioPlayback = $('#audioPlayback');
-const transcriptText = $('#transcriptText');
+const transcriptEditor = $('#transcriptEditor');
+const transcriptHint = $('#transcriptHint');
+const confirmTranscriptBtn = $('#confirmTranscriptBtn');
 const reviewBtn = $('#reviewBtn');
 const reviewLoading = $('#reviewLoading');
 const reviewPanel = $('#reviewPanel');
@@ -59,7 +64,11 @@ let audioChunks = [];
 let recognition = null;
 let finalTranscript = '';
 let interimTranscript = '';
+let confirmedTranscript = '';
 let audioUrl = '';
+let selectedAccent = localStorage.getItem('ielts-reading-accent') || 'en-GB';
+let selectedRate = Number(localStorage.getItem('ielts-reading-rate') || '0.9');
+let sentenceIndex = 0;
 
 Object.entries(categoryConfig).forEach(([category, config]) => {
     keywordsByCategory[category] = Object.fromEntries(config.fields.map(([key]) => [key, '']));
@@ -257,6 +266,8 @@ async function generateAnswer() {
         if (!response.ok) throw new Error(await getErrorMessage(response));
         await readSseStream(response, (content) => { latestAnswer += content; resultText.innerHTML = escapeHtml(latestAnswer).replace(/\n/g, '<br>'); });
         if (!latestAnswer.trim()) throw new Error('没有生成答案，请重试。');
+        sentenceIndex = 0;
+        updateReadingControls();
         recordingSection.classList.remove('hidden');
     } catch (error) {
         resultSection.classList.add('hidden'); answerEmpty.classList.remove('hidden'); alert(`生成失败：${error.message}`);
@@ -273,8 +284,14 @@ function startTimer() {
 }
 function updateTranscript() {
     const transcript = `${finalTranscript}${interimTranscript ? ` ${interimTranscript}` : ''}`.trim();
-    transcriptText.textContent = transcript || '正在聆听你的英文回答…';
-    reviewBtn.disabled = !finalTranscript.trim();
+    transcriptEditor.value = transcript;
+    const isRecording = mediaRecorder?.state === 'recording';
+    confirmTranscriptBtn.disabled = isRecording || !transcript;
+    reviewBtn.disabled = true;
+    confirmedTranscript = '';
+    transcriptHint.textContent = isRecording
+        ? '这是浏览器的原始识别结果，录音结束后请核对、修改并确认。'
+        : transcript ? '请核对姓名、专有名词和关键表达；只有确认后的文字会用于复盘。' : '没有识别到英文内容。你可以回放录音后重新录制。';
 }
 function setupSpeechRecognition() {
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -296,7 +313,10 @@ async function startRecording() {
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) { alert('当前浏览器不支持录音。请使用最新版 Chrome 并允许麦克风权限。'); return; }
     try {
         if (audioUrl) URL.revokeObjectURL(audioUrl); audioUrl = ''; audioPlayback.classList.add('hidden');
-        finalTranscript = ''; interimTranscript = ''; transcriptText.textContent = '正在聆听你的英文回答…'; reviewPanel.classList.add('hidden'); reviewBtn.disabled = true;
+        finalTranscript = ''; interimTranscript = ''; confirmedTranscript = '';
+        transcriptEditor.value = ''; transcriptEditor.disabled = true;
+        transcriptHint.textContent = '正在识别英文内容；结束后请先检查转写。';
+        confirmTranscriptBtn.disabled = true; reviewPanel.classList.add('hidden'); reviewBtn.disabled = true;
         mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true }); audioChunks = [];
         mediaRecorder = new MediaRecorder(mediaStream);
         mediaRecorder.ondataavailable = (event) => { if (event.data.size) audioChunks.push(event.data); };
@@ -313,10 +333,31 @@ function stopRecording() {
     if (recognition) { recognition.onend = null; try { recognition.stop(); } catch {} recognition = null; }
     if (mediaRecorder?.state === 'recording') mediaRecorder.stop();
     mediaStream?.getTracks().forEach((track) => track.stop()); mediaStream = null;
-    recordBtn.classList.remove('recording'); recordBtn.innerHTML = '<span class="record-indicator"></span>重新开始录音'; recordingStatus.textContent = finalTranscript.trim() ? '录音已保存。现在看看转写，并生成复盘。' : '录音已保存，但没有识别到英文转写。你仍可以回放后再试一次。'; updateTranscript();
+    transcriptEditor.disabled = false;
+    recordBtn.classList.remove('recording'); recordBtn.innerHTML = '<span class="record-indicator"></span>重新开始录音'; recordingStatus.textContent = finalTranscript.trim() ? '录音已保存。请先检查转写，再生成复盘。' : '录音已保存，但没有识别到英文转写。你仍可以回放后再试一次。'; updateTranscript();
 }
+
+function confirmTranscript() {
+    const transcript = transcriptEditor.value.trim();
+    if (!transcript) { alert('请先填写或修正英文转写。'); return; }
+    confirmedTranscript = transcript;
+    transcriptHint.textContent = '已确认：本次复盘只会使用这份已确认的转写文本。';
+    confirmTranscriptBtn.textContent = '已确认，可再次修改';
+    reviewBtn.disabled = false;
+}
+
+function invalidateConfirmedTranscript() {
+    if (!transcriptEditor.value.trim()) confirmTranscriptBtn.disabled = true;
+    else confirmTranscriptBtn.disabled = false;
+    if (!confirmedTranscript) return;
+    confirmedTranscript = '';
+    confirmTranscriptBtn.textContent = '确认转写';
+    reviewBtn.disabled = true;
+    transcriptHint.textContent = '转写已修改，请再次确认后再生成复盘。';
+}
+
 async function reviewSpeaking() {
-    const transcript = finalTranscript.trim();
+    const transcript = confirmedTranscript.trim();
     if (!transcript) return;
     reviewBtn.disabled = true; reviewLoading.classList.remove('hidden'); reviewPanel.classList.add('hidden'); reviewText.textContent = '';
     try {
@@ -324,16 +365,64 @@ async function reviewSpeaking() {
         if (!response.ok) throw new Error(await getErrorMessage(response));
         let review = ''; await readSseStream(response, (content) => { review += content; reviewText.textContent = review; });
         if (!review.trim()) throw new Error('没有生成复盘。'); reviewPanel.classList.remove('hidden');
-    } catch (error) { alert(`复盘失败：${error.message}`); } finally { reviewBtn.disabled = !finalTranscript.trim(); reviewLoading.classList.add('hidden'); }
+    } catch (error) { alert(`复盘失败：${error.message}`); } finally { reviewBtn.disabled = !confirmedTranscript.trim(); reviewLoading.classList.add('hidden'); }
+}
+
+function updateReadingControls() {
+    voiceOptions.forEach((option) => {
+        const selected = option.dataset.accent ? option.dataset.accent === selectedAccent : Number(option.dataset.rate) === selectedRate;
+        option.classList.toggle('active', selected);
+    });
+    readingStatus.textContent = `当前设置：${selectedAccent === 'en-GB' ? '英音' : '美音'} · ${selectedRate < 0.85 ? '慢速' : '自然语速'}。`;
+}
+
+function availableVoice() {
+    const voices = speechSynthesis.getVoices();
+    const exactVoice = voices.find((voice) => voice.lang.toLowerCase().startsWith(selectedAccent.toLowerCase()));
+    const englishVoice = voices.find((voice) => voice.lang.toLowerCase().startsWith('en'));
+    if (!exactVoice) readingStatus.textContent = `当前设备没有可用的${selectedAccent === 'en-GB' ? '英音' : '美音'}声音，已使用可用英语声音。`;
+    return exactVoice || englishVoice || null;
+}
+
+function stopReading() {
+    if (!('speechSynthesis' in window)) return;
+    speechSynthesis.cancel();
+    readAloudBtn.textContent = '全文领读';
+}
+
+function speak(text, onEnd) {
+    if (!('speechSynthesis' in window)) { alert('当前浏览器不支持领读。'); return; }
+    speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = selectedAccent;
+    utterance.rate = selectedRate;
+    const voice = availableVoice();
+    if (voice) utterance.voice = voice;
+    utterance.onend = () => { readAloudBtn.textContent = '全文领读'; onEnd?.(); };
+    speechSynthesis.speak(utterance);
 }
 
 function readAloud() {
     if (!latestAnswer) return;
+    if (speechSynthesis.speaking) { stopReading(); return; }
+    readAloudBtn.textContent = '停止领读';
+    readingStatus.textContent = '正在全文领读。你可以跟读，也可以切换到逐句领读。';
+    speak(latestAnswer, () => { updateReadingControls(); });
+}
+
+function splitSentences(text) {
+    return text.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g)?.map((sentence) => sentence.trim()).filter(Boolean) || [];
+}
+
+function readNextSentence() {
     if (!('speechSynthesis' in window)) { alert('当前浏览器不支持领读。'); return; }
-    if (speechSynthesis.speaking) { speechSynthesis.cancel(); readAloudBtn.textContent = '领读范文'; return; }
-    const utterance = new SpeechSynthesisUtterance(latestAnswer); utterance.lang = 'en-GB'; utterance.rate = .88;
-    utterance.onend = () => { readAloudBtn.textContent = '领读范文'; };
-    readAloudBtn.textContent = '停止领读'; speechSynthesis.speak(utterance);
+    const sentences = splitSentences(latestAnswer);
+    if (!sentences.length) return;
+    if (speechSynthesis.speaking) stopReading();
+    const current = sentenceIndex % sentences.length;
+    sentenceIndex = (current + 1) % sentences.length;
+    readingStatus.textContent = `正在领读第 ${current + 1} / ${sentences.length} 句。点击“逐句领读”继续下一句。`;
+    speak(sentences[current], () => {});
 }
 
 categoryButtons.forEach((button) => button.addEventListener('click', () => applyCategory(button.dataset.category)));
@@ -343,7 +432,16 @@ materialSearch.addEventListener('input', renderMaterialList);
 newMaterialBtn.addEventListener('click', () => openEditor()); closeMaterialEditorBtn.addEventListener('click', closeEditor); cancelMaterialBtn.addEventListener('click', closeEditor); saveMaterialBtn.addEventListener('click', saveMaterial);
 generateBtn.addEventListener('click', generateAnswer);
 recordBtn.addEventListener('click', () => mediaRecorder?.state === 'recording' ? stopRecording() : startRecording());
-reviewBtn.addEventListener('click', reviewSpeaking); readAloudBtn.addEventListener('click', readAloud);
+transcriptEditor.addEventListener('input', invalidateConfirmedTranscript);
+confirmTranscriptBtn.addEventListener('click', confirmTranscript);
+reviewBtn.addEventListener('click', reviewSpeaking); readAloudBtn.addEventListener('click', readAloud); readSentenceBtn.addEventListener('click', readNextSentence);
+voiceOptions.forEach((option) => option.addEventListener('click', () => {
+    stopReading();
+    if (option.dataset.accent) { selectedAccent = option.dataset.accent; localStorage.setItem('ielts-reading-accent', selectedAccent); }
+    if (option.dataset.rate) { selectedRate = Number(option.dataset.rate); localStorage.setItem('ielts-reading-rate', String(selectedRate)); }
+    updateReadingControls();
+}));
+if ('speechSynthesis' in window) speechSynthesis.addEventListener('voiceschanged', updateReadingControls);
 copyBtn.addEventListener('click', async () => { if (!latestAnswer) return; try { await navigator.clipboard.writeText(latestAnswer); copyBtn.textContent = '已复制'; setTimeout(() => { copyBtn.textContent = '复制答案'; }, 1300); } catch { alert('复制失败，请手动选择答案。'); } });
 
-loadMaterials(); applyCategory(currentCategory); renderMaterials(); resetTimer();
+loadMaterials(); applyCategory(currentCategory); renderMaterials(); resetTimer(); updateReadingControls();
