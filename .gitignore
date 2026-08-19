@@ -24,3 +24,14 @@ dist-ssr
 *.sw?
 
 .vercel
+
+# 环境变量与密钥（严禁提交）
+.env
+.env.*
+
+# 本地临时文件与无关内容
+docs/~$*
+*.tmp
+text.cpp
+text.exe
+job-search-cases/

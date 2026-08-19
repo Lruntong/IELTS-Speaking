@@ -5,6 +5,20 @@ const categoryLabels = {
     experience: '经历'
 };
 
+// 硬编码的 8 个母题格子：无论用户导入哪一季的题库，这套格子永远不变。
+// AI 的 slot-recommend 任务只生成“推荐映射”，从不改变分组；分组由用户拖拽决定。
+const motherSlots = [
+    { id: 'elder-person', label: '人物长辈', desc: '长辈、老师、前辈等年长或资深的人（grandparent, teacher, mentor, older relative）' },
+    { id: 'peer-person', label: '人物同辈', desc: '朋友、同学、室友、同龄人（friend, classmate, roommate, peer）' },
+    { id: 'old-object', label: '旧物', desc: '旧物品、礼物、纪念品、长期保留的物件（old object, gift, keepsake, heirloom）' },
+    { id: 'virtual-object', label: '虚拟物', desc: '应用、网站、线上服务、虚拟物品（app, website, online game, digital item）' },
+    { id: 'nature-place', label: '自然地点', desc: '户外与自然环境（park, seaside, mountain, lake, garden）' },
+    { id: 'indoor-place', label: '室内地点', desc: '室内空间（library, cafe, museum, room, shop）' },
+    { id: 'success-experience', label: '成功经历', desc: '成就、第一次成功、值得骄傲的事（achievement, award, first success）' },
+    { id: 'setback-experience', label: '挫折经历', desc: '失败、困难、低谷与克服过程（failure, challenge, difficult time）' }
+];
+const motherSlotIds = new Set(motherSlots.map((slot) => slot.id));
+
 function cleanText(value, limit = 1200) {
     return typeof value === 'string' ? value.trim().slice(0, limit) : '';
 }
@@ -35,6 +49,98 @@ function formatPersonalMaterial(personalMaterial) {
     return `Title: ${title}\nTags: ${tags.join(', ') || 'None'}\nStory: ${story}`;
 }
 
+// AI 智能聚类：只做“推荐映射”，不改分组。
+// 返回每条题目推荐的固定格子 id + 简短理由；非法 id / 非法格子会被过滤。
+async function handleSlotRecommend(res, apiKey, questions) {
+    const validQuestions = (Array.isArray(questions) ? questions : [])
+        .map((question) => ({
+            id: cleanText(question?.id, 64),
+            prompt: cleanText(question?.prompt, 500),
+            cues: Array.isArray(question?.cues) ? question.cues.map((cue) => cleanText(cue, 80)).filter(Boolean).slice(0, 4) : [],
+            tags: Array.isArray(question?.tags) ? question.tags.map((tag) => cleanText(tag, 40)).filter(Boolean).slice(0, 6) : [],
+            season: cleanText(question?.season, 30)
+        }))
+        .filter((question) => question.id && question.prompt)
+        .slice(0, 25);
+
+    if (!validQuestions.length) {
+        return res.status(400).json({ error: '没有可推荐的题目，请先导入题库。' });
+    }
+
+    const slotLines = motherSlots.map((slot) => `- ${slot.id} ${slot.label}：${slot.desc}`).join('\n');
+    const questionList = JSON.stringify(validQuestions.map(({ id, prompt, cues, tags, season }) => ({ id, prompt, cues, tags, season })));
+
+    const systemMessage = 'You are a precise IELTS Speaking Part 2 topic-mapping assistant. The 8 mother-topic slots are fixed and never change. Always reply with valid JSON only.';
+    const userMessage = `雅思口语 Part 2 题库固定使用以下 8 个母题格子，它们不随题库季节变化：
+
+${slotLines}
+
+规则：
+1. 判断依据是题干的主题对象：涉及人，先判断长辈还是同辈；涉及地点，先判断自然还是室内；涉及物品，先判断旧物还是虚拟物；涉及经历，先判断成功还是挫折。
+2. 每道题只推荐一个最合适的格子；你的输出只是建议，不会移动或改变任何题目。
+3. reason 用简体中文写 10-25 字，并引用题干关键词说明依据。
+4. 只输出 JSON（不要 markdown 代码块），格式为：
+{"recommendations":[{"id":"题目id","slot":"格子id","reason":"理由"}]}
+
+题目列表：
+${questionList}`;
+
+    try {
+        const response = await fetch('https://api.deepseek.com/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey?.trim()}`
+            },
+            body: JSON.stringify({
+                model: 'deepseek-chat',
+                messages: [
+                    { role: 'system', content: systemMessage },
+                    { role: 'user', content: userMessage }
+                ],
+                temperature: 0.2,
+                response_format: { type: 'json_object' }
+            })
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('DeepSeek slot-recommend error:', response.status, errorText);
+            return res.status(response.status).json({ error: '模型服务暂时不可用，请稍后重试。' });
+        }
+
+        const data = await response.json();
+        let content = data.choices?.[0]?.message?.content || '';
+        let parsed = null;
+        try {
+            parsed = JSON.parse(content);
+        } catch {
+            const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+            try { parsed = JSON.parse(cleaned); } catch { parsed = null; }
+        }
+
+        const rawList = Array.isArray(parsed?.recommendations) ? parsed.recommendations : [];
+        const knownIds = new Set(validQuestions.map((question) => question.id));
+        const seen = new Set();
+        const recommendations = rawList
+            .map((item) => ({
+                id: String(item?.id || '').trim(),
+                slot: String(item?.slot || '').trim(),
+                reason: cleanText(item?.reason, 80)
+            }))
+            .filter((item) => {
+                if (!knownIds.has(item.id) || !motherSlotIds.has(item.slot) || seen.has(item.id)) return false;
+                seen.add(item.id);
+                return true;
+            });
+
+        return res.json({ recommendations });
+    } catch (error) {
+        console.error('Slot recommend request failed:', error);
+        return res.status(500).json({ error: '推荐服务出现异常，请稍后重试。' });
+    }
+}
+
 export default async function handler(req, res) {
     if (req.method !== 'POST') {
         res.setHeader('Allow', 'POST');
@@ -47,7 +153,7 @@ export default async function handler(req, res) {
     }
 
     const body = req.body || {};
-    const supportedTasks = ['model-answer', 'memory-outline', 'speaking-review'];
+    const supportedTasks = ['model-answer', 'memory-outline', 'speaking-review', 'slot-recommend'];
     const task = supportedTasks.includes(body.task) ? body.task : 'model-answer';
     const topic = cleanText(body.topic, 500);
     const keywords = cleanText(body.keywords);
@@ -65,6 +171,10 @@ export default async function handler(req, res) {
 
     if (task === 'speaking-review' && !transcript) {
         return res.status(400).json({ error: '请先完成英文转写，再生成复盘。' });
+    }
+
+    if (task === 'slot-recommend') {
+        return handleSlotRecommend(res, apiKey, body.questions);
     }
 
     const structuredKeywords = formatStructuredKeywords(body.structuredKeywords);

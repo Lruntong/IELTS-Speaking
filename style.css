@@ -75,3 +75,48 @@ input:focus,textarea:focus,select:focus { border-color:var(--accent); box-shadow
 .material-list { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }.material-card { display:flex; min-height:210px; flex-direction:column; padding:20px; border:1px solid var(--line); border-radius:13px; background:var(--panel); }.material-card.active { border-color:var(--accent); box-shadow:0 0 0 2px rgba(182,87,44,.08); }.material-card h3 { margin-bottom:8px; font-family:var(--serif); font-size:1.23rem; letter-spacing:-.025em; }.material-story-preview { display:-webkit-box; overflow:hidden; margin-bottom:12px; color:var(--muted); font-size:.84rem; line-height:1.65; -webkit-line-clamp:4; -webkit-box-orient:vertical; }.material-tags { margin:auto 0 13px; color:var(--accent-dark); font-size:.75rem; }.material-card-actions { display:flex; gap:13px; }.material-card-actions button { border:0; padding:0; background:transparent; font-size:.8rem; font-weight:750; }.material-use-btn { color:var(--accent-dark); }.material-delete-btn { color:var(--muted); }.material-empty { grid-column:1/-1; padding:50px; border:1px dashed var(--line); border-radius:13px; color:var(--muted); text-align:center; }
 .hidden { display:none !important; }
 @media (max-width:760px) { .site-header { height:64px; padding:0 20px; }.page-shell { width:min(100% - 32px,620px); padding-top:42px; }.practice-layout,.recording-grid,.editor-grid { grid-template-columns:1fr; }.answer-panel { min-height:370px; }.answer-empty { margin-top:55px; }.answer-text { min-height:0; }.recording-section { padding:24px; }.transcript-wrap { padding:25px 0 0; border-top:1px solid #514a44; border-left:0; }.library-hero { display:block; }.library-hero .primary-button { width:100%; margin-top:20px; }.material-list { grid-template-columns:1fr; }.library-toolbar { display:block; }.library-toolbar p { margin-top:10px; }.category-buttons { grid-template-columns:repeat(2,1fr); }.structured-field { grid-template-columns:1fr; gap:3px; }.main-nav { gap:15px; } }
+
+/* ===== 题库 · 固定 8 个母题格子 ===== */
+.bank-hero { display:flex; justify-content:space-between; align-items:flex-end; gap:24px; margin-bottom:34px; }
+.bank-hero h1 { margin-bottom:10px; }
+.bank-hero>div>p:last-child { max-width:540px; margin:0; color:var(--muted); font-size:1.04rem; }
+.bank-summary { max-width:330px; margin:0; color:var(--muted); font-size:.86rem; line-height:1.7; text-align:right; }
+.import-panel { margin-bottom:24px; }
+.import-grid { display:grid; grid-template-columns:210px 1fr; gap:16px; }
+.import-actions { display:flex; flex-wrap:wrap; gap:12px 16px; align-items:center; }
+.import-actions .primary-button { width:auto; }
+.import-actions .secondary-button { width:auto; }
+.import-status { width:100%; margin:2px 0 0; color:var(--muted); font-size:.8rem; }
+.danger-text { color:#b3442f !important; }
+.bank-toolbar { display:flex; flex-wrap:wrap; gap:10px 18px; align-items:center; margin-bottom:18px; padding:16px 18px; border:1px solid var(--line); border-radius:13px; background:var(--soft); }
+.bank-toolbar .secondary-button { width:auto; }
+.bank-toolbar .secondary-button:disabled { cursor:not-allowed; opacity:.55; }
+.recommend-status { flex:1; min-width:230px; margin:0; color:var(--muted); font-size:.8rem; }
+.slots-board { display:flex; flex-direction:column; gap:16px; }
+.slots-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
+.slot-cell { display:flex; min-height:250px; flex-direction:column; padding:16px; border:1px solid var(--line); border-radius:13px; background:var(--panel); transition:border-color .15s, box-shadow .15s; }
+.slot-cell.drag-over { border-color:var(--accent); box-shadow:0 0 0 3px rgba(182,87,44,.12); }
+.slot-head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:5px; }
+.slot-head h3 { margin:0; font-family:var(--serif); font-size:1.16rem; letter-spacing:-.02em; }
+.slot-en { margin:2px 0 0; color:var(--muted); font-size:.72rem; line-height:1.5; }
+.slot-count { flex:0 0 auto; min-width:26px; padding:2px 8px; border-radius:99px; background:var(--soft); color:var(--muted); font-size:.74rem; font-weight:800; text-align:center; }
+.slot-desc { margin:2px 0 10px; color:var(--muted); font-size:.74rem; line-height:1.55; }
+.slot-list { display:flex; flex-direction:column; gap:8px; min-height:70px; }
+.slot-empty { margin:0; padding:18px 6px; color:var(--muted); font-size:.76rem; line-height:1.55; text-align:center; }
+.pool-cell { border-style:dashed; background:#fbfaf8; }
+.question-chip { padding:10px 11px; border:1px solid var(--line); border-radius:10px; background:#fff; box-shadow:0 3px 10px rgba(55,45,35,.05); transition:border-color .15s, opacity .15s; }
+.question-chip:hover { border-color:#d9c9b9; }
+.question-chip.dragging { opacity:.4; }
+.question-chip-row { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
+.q-prompt { flex:1; min-width:0; margin:0; color:var(--ink); font-size:.8rem; line-height:1.5; cursor:pointer; display:-webkit-box; overflow:hidden; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+.q-prompt:hover { color:var(--accent-dark); }
+.q-remove { flex:0 0 auto; padding:0 2px; border:0; background:transparent; color:var(--muted); font-size:1.05rem; line-height:1.2; }
+.q-remove:hover { color:#b3442f; }
+.q-meta-row { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:7px; }
+.q-meta { margin:0; overflow:hidden; color:var(--muted); font-size:.68rem; text-overflow:ellipsis; white-space:nowrap; }
+.q-assign { width:auto; flex:0 0 auto; max-width:118px; padding:3px 5px; font-size:.7rem; border-radius:7px; }
+.q-suggest { width:100%; margin-top:8px; padding:4px 8px; border:1px dashed var(--accent); border-radius:8px; color:var(--accent-dark); background:#fff7f3; font-size:.7rem; line-height:1.45; text-align:left; display:-webkit-box; overflow:hidden; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+.q-suggest:hover { border-style:solid; }
+.q-suggest.accepted { border-style:solid; background:var(--accent); color:#fff; }
+@media (max-width:1000px) { .slots-grid { grid-template-columns:repeat(2,1fr); } }
+@media (max-width:760px) { .bank-hero { display:block; }.bank-summary { margin-top:12px; text-align:left; }.import-grid { grid-template-columns:1fr; }.slots-grid { grid-template-columns:1fr; } }

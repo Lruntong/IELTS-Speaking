@@ -11,6 +11,7 @@
       <a class="brand" href="#practice" aria-label="口语练习首页">Speaking<span>,</span> Personally</a>
       <nav class="main-nav" aria-label="主导航">
         <button type="button" class="nav-link active" data-view-target="practiceView">练习</button>
+        <button type="button" class="nav-link" data-view-target="bankView">题库 <span id="bankCount" class="nav-count">0</span></button>
         <button type="button" class="nav-link" data-view-target="libraryView">我的素材库 <span id="materialCount" class="nav-count">0</span></button>
       </nav>
     </header>
@@ -106,6 +107,59 @@
               <div id="reviewPanel" class="review-panel hidden"><h3>本次复盘</h3><div id="reviewText"></div></div>
               <p class="browser-note">转写使用浏览器的英文语音识别；推荐使用最新版 Chrome，并允许麦克风权限。</p>
             </div>
+          </div>
+        </section>
+      </section>
+
+      <section id="bankView" class="view-section hidden" aria-labelledby="bankTitle">
+        <div class="bank-hero">
+          <div>
+            <p class="eyebrow">MOTHER TOPICS · FIXED 8 GRID</p>
+            <h1 id="bankTitle">题库会换季，<br />格子永远不变。</h1>
+            <p>无论导入哪一季的题库，题目都只会进入这 8 个固定母题格子。AI 只做「推荐映射」，分组永远由你决定。</p>
+          </div>
+          <p id="bankSummary" class="bank-summary"></p>
+        </div>
+
+        <section class="panel import-panel" aria-labelledby="importTitle">
+          <div class="panel-heading">
+            <span class="step-number">01</span>
+            <div><p class="eyebrow">IMPORT</p><h2 id="importTitle">导入任意一季题库</h2></div>
+          </div>
+          <div class="import-grid">
+            <div class="form-group">
+              <label for="bankSeason">季节 / 版本 <span>可选</span></label>
+              <input id="bankSeason" type="text" maxlength="20" placeholder="例如：2026-09" />
+            </div>
+            <div class="form-group">
+              <label for="bankText">粘贴题目 <span>每行一题；用 | 分隔 cue 要点</span></label>
+              <textarea id="bankText" rows="6" placeholder="Describe a memorable outdoor activity. | what it was | why it was memorable&#10;Describe a person who has helped you."></textarea>
+            </div>
+          </div>
+          <div class="import-actions">
+            <button id="importTextBtn" class="primary-button" type="button">导入文本 <span>→</span></button>
+            <button id="importFileBtn" class="secondary-button" type="button">导入 CSV / JSON 文件</button>
+            <button id="sampleBankBtn" class="text-button" type="button">载入示例题库</button>
+            <button id="clearBankBtn" class="text-button danger-text" type="button">清空题库</button>
+            <input id="bankFile" type="file" class="hidden" accept=".csv,.json,text/csv,application/json" />
+            <p id="importStatus" class="import-status"></p>
+          </div>
+        </section>
+
+        <div class="bank-toolbar">
+          <button id="recommendBtn" class="secondary-button" type="button" disabled>AI 推荐映射（仅建议，不改分组）</button>
+          <p id="recommendStatus" class="recommend-status">AI 会为每道题推荐一个格子，并以「AI建议」显示；是否采纳、最终分到哪格，都由你拖拽决定。</p>
+        </div>
+
+        <section class="slots-board" aria-label="八个固定母题格子">
+          <div id="slotGrid" class="slots-grid"></div>
+          <div id="poolCell" class="slot-cell pool-cell">
+            <div class="slot-head">
+              <div><h3>未分配</h3><p class="slot-en">UNASSIGNED · 先放在这里的题</p></div>
+              <span id="poolCount" class="slot-count">0</span>
+            </div>
+            <p class="slot-desc">点击题目可直接去练习；拖入上方 8 个格子完成分配，也可以拖回这里取消分配。</p>
+            <div id="poolList" class="slot-list"></div>
           </div>
         </section>
       </section>
