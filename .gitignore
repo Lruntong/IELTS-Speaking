@@ -24,6 +24,7 @@ dist-ssr
 *.sw?
 
 .vercel
+.worktrees/
 
 # 环境变量与密钥（严禁提交）
 .env
