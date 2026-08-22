@@ -1,6 +1,7 @@
 import { LEGACY_TO_MOTHER_ID, normalizePrompt } from './mother-topics.js';
 
 const DEFAULT_SCHEMA_VERSION = 2;
+const FALLBACK_CREATED_AT = '1970-01-01T00:00:00.000Z';
 
 function cloneValue(value) {
   if (Array.isArray(value)) {
@@ -56,7 +57,7 @@ function ensureSeason(seasons, seasonId, activeSeasonId) {
             ...season,
             label: season.label || createSeasonLabel(seasonId),
             status: season.status || defaultSeasonStatus(seasonId, activeSeasonId),
-            createdAt: season.createdAt || `${seasonId}T00:00:00.000Z`,
+            createdAt: normalizeCreatedAt(season.createdAt, `${seasonId}T00:00:00.000Z`),
           }
         : season
     );
@@ -73,28 +74,54 @@ function ensureSeason(seasons, seasonId, activeSeasonId) {
   ];
 }
 
+function normalizeCreatedAt(value, fallback = FALLBACK_CREATED_AT) {
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString();
+  }
+
+  return fallback;
+}
+
 function sanitizeQuestion(question, defaults = {}) {
-  const prompt = String(question?.prompt ?? '').trim();
-  const seasonId = String(question?.seasonId ?? question?.season ?? defaults.seasonId ?? '').trim();
-  const normalized = normalizePrompt(prompt);
+  const baseQuestion = question && typeof question === 'object' ? cloneValue(question) : {};
+  const prompt = String(baseQuestion.prompt ?? defaults.prompt ?? '').trim();
+  const seasonValue = baseQuestion.seasonId ?? baseQuestion.season ?? defaults.seasonId ?? defaults.season;
+  const seasonId = String(seasonValue ?? '').trim();
+  const normalizedPrompt = normalizePrompt(baseQuestion.normalizedPrompt ?? prompt);
+  const createdAtFallback = seasonId ? `${seasonId}T00:00:00.000Z` : FALLBACK_CREATED_AT;
 
   return {
-    id: String(question?.id ?? defaults.id ?? ''),
+    ...baseQuestion,
+    ...defaults,
+    id: String(baseQuestion.id ?? defaults.id ?? ''),
     prompt,
-    cues: Array.isArray(question?.cues)
-      ? question.cues.map((cue) => String(cue).trim()).filter(Boolean)
+    cues: Array.isArray(baseQuestion.cues ?? defaults.cues)
+      ? (baseQuestion.cues ?? defaults.cues).map((cue) => String(cue).trim()).filter(Boolean)
       : [],
-    tags: Array.isArray(question?.tags)
-      ? question.tags.map((tag) => String(tag).trim()).filter(Boolean)
+    tags: Array.isArray(baseQuestion.tags ?? defaults.tags)
+      ? (baseQuestion.tags ?? defaults.tags).map((tag) => String(tag).trim()).filter(Boolean)
       : [],
     seasonId,
-    motherId: question?.motherId ?? defaults.motherId ?? null,
-    source: String(question?.source ?? defaults.source ?? 'user'),
-    normalizedPrompt: normalized,
-    createdAt: String(
-      question?.createdAt ??
-        defaults.createdAt ??
-        (seasonId ? `${seasonId}T00:00:00.000Z` : '1970-01-01T00:00:00.000Z')
+    motherId: baseQuestion.motherId ?? defaults.motherId ?? null,
+    source: String(baseQuestion.source ?? defaults.source ?? 'user'),
+    normalizedPrompt,
+    createdAt: normalizeCreatedAt(
+      baseQuestion.createdAt ?? defaults.createdAt,
+      createdAtFallback
     ),
   };
 }
@@ -102,7 +129,7 @@ function sanitizeQuestion(question, defaults = {}) {
 function sortQuestionsByCreatedAt(questions) {
   return [...questions].sort((left, right) => {
     if (left.createdAt === right.createdAt) {
-      return left.id.localeCompare(right.id);
+      return String(left.id).localeCompare(String(right.id));
     }
 
     return left.createdAt.localeCompare(right.createdAt);
@@ -117,6 +144,14 @@ function defaultQuestionId() {
   return `question-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function sanitizeQuestions(questions, defaults = {}) {
+  return Array.isArray(questions)
+    ? questions
+        .map((question) => sanitizeQuestion(question, defaults))
+        .filter((question) => question.id && question.prompt)
+    : [];
+}
+
 function cloneState(state) {
   const base = state && typeof state === 'object' ? state : {};
 
@@ -124,17 +159,24 @@ function cloneState(state) {
     schemaVersion: DEFAULT_SCHEMA_VERSION,
     seasons: Array.isArray(base.seasons) ? base.seasons.map((season) => cloneValue(season)) : [],
     activeSeasonId: base.activeSeasonId ?? null,
-    userQuestions: Array.isArray(base.userQuestions)
-      ? base.userQuestions.map((question) => sanitizeQuestion(question))
-      : [],
+    userQuestions: sanitizeQuestions(base.userQuestions),
     classificationOverrides:
       base.classificationOverrides && typeof base.classificationOverrides === 'object'
         ? cloneValue(base.classificationOverrides)
         : {},
     savedAnswers:
       base.savedAnswers && typeof base.savedAnswers === 'object' ? cloneValue(base.savedAnswers) : {},
+    ...(Array.isArray(base.questions) ? { questions: sanitizeQuestions(base.questions) } : {}),
     ...(hasOwn(base, 'legacy') ? { legacy: cloneValue(base.legacy) } : {}),
   };
+}
+
+function getMergedQuestions(state) {
+  if (Array.isArray(state.questions)) {
+    return sanitizeQuestions(state.questions);
+  }
+
+  return sanitizeQuestions(state.userQuestions);
 }
 
 export function createEmptyBankState() {
@@ -168,9 +210,10 @@ export function migrateLegacyBank(raw) {
         seasonId: question?.season || 'legacy',
         motherId: LEGACY_TO_MOTHER_ID[legacyAssignments[question?.id]] ?? null,
         source: 'user',
-        createdAt:
-          question?.createdAt ||
-          (question?.importedAt ? new Date(question.importedAt).toISOString() : undefined),
+        createdAt: normalizeCreatedAt(
+          question?.createdAt ?? question?.importedAt,
+          question?.season ? `${question.season}T00:00:00.000Z` : FALLBACK_CREATED_AT
+        ),
       })
     )
     .filter((question) => question.id && question.prompt);
@@ -192,11 +235,7 @@ export function migrateLegacyBank(raw) {
 
 export function mergeOfficialQuestions(state, officialQuestions) {
   const nextState = cloneState(state);
-  const official = Array.isArray(officialQuestions)
-    ? officialQuestions
-        .map((question) => sanitizeQuestion(question, { source: 'official' }))
-        .filter((question) => question.id && question.prompt)
-    : [];
+  const official = sanitizeQuestions(officialQuestions, { source: 'official' });
   const mergedQuestions = [
     ...official.map((question) => ({
       ...question,
@@ -227,7 +266,7 @@ export function mergeOfficialQuestions(state, officialQuestions) {
 export function importSeasonQuestions(state, items, seasonId, createId = defaultQuestionId) {
   const nextState = cloneState(state);
   const targetSeasonId = String(seasonId ?? '').trim();
-  const existingQuestions = [...nextState.userQuestions];
+  const existingQuestions = getMergedQuestions(nextState);
   const importedQuestions = [];
   const normalizedBySeason = new Set(
     existingQuestions.map((question) => `${question.seasonId}::${question.normalizedPrompt}`)
@@ -265,16 +304,25 @@ export function importSeasonQuestions(state, items, seasonId, createId = default
   return {
     ...nextState,
     activeSeasonId: targetSeasonId || nextState.activeSeasonId,
-    seasons: ensureSeason(nextState.seasons, targetSeasonId, targetSeasonId || nextState.activeSeasonId),
+    seasons: ensureSeason(
+      nextState.seasons,
+      targetSeasonId,
+      targetSeasonId || nextState.activeSeasonId
+    ),
     userQuestions: [...nextState.userQuestions, ...importedQuestions],
+    ...(Array.isArray(nextState.questions)
+      ? { questions: [...nextState.questions, ...importedQuestions] }
+      : {}),
   };
 }
 
 export function serializeBankState(state) {
+  const nextState = cloneState(state);
+
   return cloneValue({
-    ...cloneState(state),
-    ...(Array.isArray(state?.questions)
-      ? { questions: state.questions.map((question) => sanitizeQuestion(question)) }
+    ...nextState,
+    ...(Array.isArray(nextState.questions)
+      ? { questions: sanitizeQuestions(nextState.questions) }
       : {}),
   });
 }
