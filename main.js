@@ -20,6 +20,7 @@ import {
     migrateLegacyBank,
     serializeBankState
 } from './src/question-bank-store.js';
+import { resetBankQuestionPracticeContext } from './src/practice-session-state.js';
 import {
     getSavedAnswer,
     isMaterialNewer,
@@ -211,6 +212,83 @@ function clearAnswer() {
     savedAnswerStatus.textContent = '';
     saveAnswerBtn.classList.add('hidden');
     recordingSection.classList.add('hidden');
+}
+
+function clearRecordingReviewState() {
+    stopReading();
+    clearInterval(timerId);
+    timerId = null;
+    timerSeconds = 120;
+    countdownDisplay.textContent = formatTime(timerSeconds);
+
+    if (recognition) {
+        recognition.onend = null;
+        try { recognition.stop(); } catch {}
+        recognition = null;
+    }
+
+    if (mediaRecorder?.state === 'recording') {
+        mediaRecorder.ondataavailable = null;
+        mediaRecorder.onstop = null;
+        try { mediaRecorder.stop(); } catch {}
+    }
+    mediaRecorder = null;
+    mediaStream?.getTracks().forEach((track) => track.stop());
+    mediaStream = null;
+    audioChunks = [];
+
+    if (audioUrl) {
+        URL.revokeObjectURL(audioUrl);
+    }
+    audioUrl = '';
+    audioPlayback.removeAttribute('src');
+    audioPlayback.classList.add('hidden');
+
+    recordingSection.classList.add('hidden');
+    finalTranscript = '';
+    interimTranscript = '';
+    confirmedTranscript = '';
+    transcriptEditor.value = '';
+    transcriptEditor.disabled = true;
+    transcriptHint.textContent = '原始转写不会直接用于复盘；请先检查并确认。';
+    confirmTranscriptBtn.disabled = true;
+    confirmTranscriptBtn.textContent = '确认转写';
+    reviewBtn.disabled = true;
+    reviewLoading.classList.add('hidden');
+    reviewPanel.classList.add('hidden');
+    reviewText.textContent = '';
+    recordBtn.classList.remove('recording');
+    recordBtn.innerHTML = '<span class="record-indicator"></span>开始两分钟录音';
+    recordingStatus.textContent = '准备好后，开始录音。';
+}
+
+function exitBankQuestionContextForTopicEdit(typedTopic) {
+    const reset = resetBankQuestionPracticeContext({
+        topic: typedTopic,
+        practiceQuestionId,
+        selectedMaterialId,
+        latestAnswer,
+        answerText: resultText.value,
+        resultVisible: !resultSection.classList.contains('hidden'),
+        recordingVisible: !recordingSection.classList.contains('hidden'),
+        finalTranscript,
+        interimTranscript,
+        confirmedTranscript,
+        transcriptText: transcriptEditor.value,
+        reviewText: reviewText.textContent,
+        reviewVisible: !reviewPanel.classList.contains('hidden'),
+        savedAnswerStatus: savedAnswerStatus.textContent
+    });
+
+    practiceQuestionId = reset.practiceQuestionId;
+    selectedMaterialId = reset.selectedMaterialId;
+    latestAnswer = reset.latestAnswer;
+    resultText.value = reset.answerText;
+    resultSection.classList.toggle('hidden', !reset.resultVisible);
+    answerEmpty.classList.toggle('hidden', reset.resultVisible);
+    savedAnswerStatus.textContent = reset.savedAnswerStatus;
+    saveAnswerBtn.classList.add('hidden');
+    clearRecordingReviewState();
 }
 
 function renderSavedAnswerControls() {
@@ -1909,7 +1987,7 @@ materialSearch.addEventListener('input', renderMaterialList);
 topicInput.addEventListener('input', () => {
     const question = currentPracticeQuestion();
     if (question && topicInput.value !== question.prompt) {
-        practiceQuestionId = '';
+        exitBankQuestionContextForTopicEdit(topicInput.value);
         renderMaterials();
         renderSavedAnswerControls();
     }
