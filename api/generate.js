@@ -50,6 +50,78 @@ function formatPersonalMaterial(personalMaterial) {
     return `Title: ${title}\nTags: ${tags.join(', ') || 'None'}\nStory: ${story}`;
 }
 
+function formatCues(cues) {
+    return Array.isArray(cues)
+        ? cues.map((cue) => cleanText(cue, 120)).filter(Boolean).slice(0, 6).join('; ')
+        : '';
+}
+
+export function buildGenerationMessages({
+    task,
+    topic,
+    category,
+    keywords,
+    transcript,
+    referenceAnswer,
+    structuredKeywords,
+    personalMaterial,
+    cues,
+    motherLabel
+}) {
+    const categoryLabel = categoryLabels[category] || '未分类';
+    const materialText = formatPersonalMaterial(personalMaterial);
+    const structuredText = formatStructuredKeywords(structuredKeywords);
+    const cueText = formatCues(cues);
+    const cleanMotherLabel = cleanText(motherLabel, 80);
+
+    if (task === 'memory-outline') {
+        return [
+            {
+                role: 'system',
+                content: 'You help IELTS learners memorize their own answer. Return ONLY 6-8 concise English bullet points. Each point must contain at most 10 words, preserve the answer\'s sequence, and contain no markdown styling.'
+            },
+            { role: 'user', content: `Answer to condense:\n${keywords}` }
+        ];
+    }
+
+    if (task === 'speaking-review') {
+        return [
+            {
+                role: 'system',
+                content: `You are a supportive IELTS Speaking coach for a learner around Band 6. Review the learner's transcribed Part 2 response. The transcript may contain speech-recognition errors, so do not over-correct isolated words. Give concise, practical feedback in Simplified Chinese. Do NOT give a precise IELTS band score. Output plain text only, using exactly these sections: 做得好的：, 最值得改的一点：, 更自然的说法：, 下次挑战：. Give 1-2 bullets per section. Focus on content coverage, fluency, clarity, grammar, and easy-to-say alternatives.`
+            },
+            {
+                role: 'user',
+                content: `Question: ${topic || 'Not provided'}\nLearner transcript:\n${transcript}\n\nReference answer for context only (do not ask learner to memorize it):\n${referenceAnswer || 'Not provided'}`
+            }
+        ];
+    }
+
+    if (task === 'adapt-answer') {
+        return [
+            {
+                role: 'system',
+                content: `You are an empathetic IELTS Speaking tutor. Adapt the learner's real personal material into a natural IELTS Speaking Part 2 answer. Output exactly three plain-text paragraphs separated by blank lines: paragraph 1 is a paraphrased opening and transition into the story, paragraph 2 selectively emphasizes the useful story body, and paragraph 3 gives the feeling or impact conclusion. Do not invent facts, names, dates, places, relationships, outcomes, or motivations beyond the provided material. Do not add markdown headings, bullet points, labels, scores, explanations, or extra paragraphs.`
+            },
+            {
+                role: 'user',
+                content: `Question: ${topic}\nCue card points: ${cueText || 'Not provided'}\nMother topic: ${cleanMotherLabel || 'Not provided'}\nSelected personal material:\n${materialText}`
+            }
+        ];
+    }
+
+    return [
+        {
+            role: 'system',
+            content: `You are an empathetic IELTS Speaking tutor helping a learner around Band 6 build fluency from real experiences. Write a natural, speakable IELTS Speaking Part 2 model answer based strictly on the learner's details. Do not invent specific facts when details are present. Use clear Band 6.5-7 vocabulary, a few natural discourse markers, and easy-to-reuse sentence patterns. Keep it about 170-200 words. Output ONLY the spoken answer, with no title, score, explanation, or markdown.`
+        },
+        {
+            role: 'user',
+            content: `Question: ${topic}\nQuestion type: ${categoryLabel}\nSelected personal material (use its facts and details whenever relevant):\n${materialText || 'No personal material selected.'}\nLearner's free-form notes: ${keywords || 'No notes supplied.'}\nLearner's structured details:\n${structuredText || 'No structured details supplied.'}`
+        }
+    ];
+}
+
 function parseJsonContent(content) {
     if (!content) {
         return null;
@@ -196,14 +268,13 @@ export default async function handler(req, res) {
     }
 
     const body = req.body || {};
-    const supportedTasks = ['model-answer', 'memory-outline', 'speaking-review', 'slot-recommend', 'mother-classify'];
+    const supportedTasks = ['model-answer', 'memory-outline', 'speaking-review', 'slot-recommend', 'mother-classify', 'adapt-answer'];
     const task = supportedTasks.includes(body.task) ? body.task : 'model-answer';
     const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
     const topic = cleanText(body.topic, 500);
     const keywords = cleanText(body.keywords);
     const transcript = cleanText(body.transcript, 6000);
     const referenceAnswer = cleanText(body.referenceAnswer, 3000);
-    const category = categoryLabels[body.category] || '未分类';
 
     if ((task === 'slot-recommend' || task === 'mother-classify')) {
         return handleMotherClassify(res, apiKey, body.questions);
@@ -217,6 +288,14 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: '请填写题目。' });
     }
 
+    if (task === 'adapt-answer' && !topic) {
+        return res.status(400).json({ error: '请先选择一道题目。' });
+    }
+
+    if (task === 'adapt-answer' && !formatPersonalMaterial(body.personalMaterial)) {
+        return res.status(400).json({ error: '请先为这道题准备一条有效素材。' });
+    }
+
     if (task === 'memory-outline' && !keywords) {
         return res.status(400).json({ error: '没有可提炼的范文内容。' });
     }
@@ -225,37 +304,18 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: '请先完成英文转写，再生成复盘。' });
     }
 
-    const structuredKeywords = formatStructuredKeywords(body.structuredKeywords);
-    const personalMaterial = formatPersonalMaterial(body.personalMaterial);
-    const messages = task === 'memory-outline'
-        ? [
-            {
-                role: 'system',
-                content: 'You help IELTS learners memorize their own answer. Return ONLY 6-8 concise English bullet points. Each point must contain at most 10 words, preserve the answer\'s sequence, and contain no markdown styling.'
-            },
-            { role: 'user', content: `Answer to condense:\n${keywords}` }
-        ]
-        : task === 'speaking-review'
-            ? [
-                {
-                    role: 'system',
-                    content: `You are a supportive IELTS Speaking coach for a learner around Band 6. Review the learner's transcribed Part 2 response. The transcript may contain speech-recognition errors, so do not over-correct isolated words. Give concise, practical feedback in Simplified Chinese. Do NOT give a precise IELTS band score. Output plain text only, using exactly these sections: 做得好的：, 最值得改的一点：, 更自然的说法：, 下次挑战：. Give 1-2 bullets per section. Focus on content coverage, fluency, clarity, grammar, and easy-to-say alternatives.`
-                },
-                {
-                    role: 'user',
-                    content: `Question: ${topic || 'Not provided'}\nLearner transcript:\n${transcript}\n\nReference answer for context only (do not ask learner to memorize it):\n${referenceAnswer || 'Not provided'}`
-                }
-            ]
-            : [
-                {
-                    role: 'system',
-                    content: `You are an empathetic IELTS Speaking tutor helping a learner around Band 6 build fluency from real experiences. Write a natural, speakable IELTS Speaking Part 2 model answer based strictly on the learner's details. Do not invent specific facts when details are present. Use clear Band 6.5-7 vocabulary, a few natural discourse markers, and easy-to-reuse sentence patterns. Keep it about 170-200 words. Output ONLY the spoken answer, with no title, score, explanation, or markdown.`
-                },
-                {
-                    role: 'user',
-                    content: `Question: ${topic}\nQuestion type: ${category}\nSelected personal material (use its facts and details whenever relevant):\n${personalMaterial || 'No personal material selected.'}\nLearner's free-form notes: ${keywords || 'No notes supplied.'}\nLearner's structured details:\n${structuredKeywords || 'No structured details supplied.'}`
-                }
-            ];
+    const messages = buildGenerationMessages({
+        task,
+        topic,
+        category: body.category,
+        keywords,
+        transcript,
+        referenceAnswer,
+        structuredKeywords: body.structuredKeywords,
+        personalMaterial: body.personalMaterial,
+        cues: body.cues,
+        motherLabel: body.motherLabel
+    });
 
     try {
         const response = await fetch('https://api.deepseek.com/chat/completions', {

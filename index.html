@@ -39,6 +39,7 @@
               <p id="selectedMaterialInfo" class="field-hint">还没有选择素材。</p>
             </div>
             <p id="practiceMaterialMode" class="field-hint hidden">从题库进入的题目会自动使用对应素材。</p>
+            <button id="prepareMaterialBtn" class="text-button hidden" type="button">去准备这条素材</button>
 
             <div class="form-group">
               <label for="topic">雅思 Part 2 题目</label>
@@ -70,7 +71,11 @@
             </div>
             <div id="answerEmpty" class="answer-empty">先选择素材、填写题目。答案会保留你自己的细节，而不是一篇通用范文。</div>
               <div id="resultSection" class="hidden">
-                <div id="resultText" class="answer-text"></div>
+                <textarea id="resultText" class="answer-text" rows="12" aria-label="可编辑口语答案"></textarea>
+                <p id="savedAnswerStatus" class="saved-answer-status"></p>
+                <div class="save-answer-row">
+                  <button id="saveAnswerBtn" class="secondary-button hidden" type="button">保存答案</button>
+                </div>
                 <div class="read-controls" aria-label="领读设置">
                   <div class="read-control-group"><span>口音</span><button type="button" class="voice-option active" data-accent="en-GB">英音</button><button type="button" class="voice-option" data-accent="en-US">美音</button></div>
                   <div class="read-control-group"><span>语速</span><button type="button" class="voice-option" data-rate="0.78">慢速</button><button type="button" class="voice-option active" data-rate="0.9">自然</button></div>

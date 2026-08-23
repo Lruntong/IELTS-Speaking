@@ -20,6 +20,11 @@ import {
     migrateLegacyBank,
     serializeBankState
 } from './src/question-bank-store.js';
+import {
+    getSavedAnswer,
+    isMaterialNewer,
+    saveAnswer
+} from './src/saved-answer-store.js';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -32,6 +37,7 @@ const structuredKeywords = $('#structuredKeywords');
 const practiceMaterialGroup = $('#practiceMaterialGroup');
 const materialSelect = $('#materialSelect');
 const practiceMaterialMode = $('#practiceMaterialMode');
+const prepareMaterialBtn = $('#prepareMaterialBtn');
 const selectedMaterialInfo = $('#selectedMaterialInfo');
 const materialCount = $('#materialCount');
 const resultSection = $('#resultSection');
@@ -43,6 +49,8 @@ const readSentenceBtn = $('#readSentenceBtn');
 const readingStatus = $('#readingStatus');
 const voiceOptions = $$('.voice-option');
 const copyBtn = $('#copyBtn');
+const saveAnswerBtn = $('#saveAnswerBtn');
+const savedAnswerStatus = $('#savedAnswerStatus');
 const recordingSection = $('#recordingSection');
 const recordBtn = $('#recordBtn');
 const recordingStatus = $('#recordingStatus');
@@ -105,10 +113,6 @@ Object.entries(categoryConfig).forEach(([category, config]) => {
     keywordsByCategory[category] = Object.fromEntries(config.fields.map(([key]) => [key, '']));
 });
 
-function escapeHtml(value) {
-    return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
 function formatTime(seconds) {
     return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
 }
@@ -152,6 +156,92 @@ function activePracticeMaterial() {
         practiceQuestion: currentPracticeQuestion(),
         selectedMaterialId
     });
+}
+
+function activePracticeSavedAnswer() {
+    const question = currentPracticeQuestion();
+    return question ? getSavedAnswer(questionBankState.savedAnswers, question.id) : null;
+}
+
+function materialUpdatedAt(material) {
+    return material?.updatedAt || material?.createdAt || '';
+}
+
+function motherLabelForQuestion(question) {
+    return question?.motherId ? (getMotherTopic(question.motherId)?.label || question.motherId) : '';
+}
+
+function missingMaterialBindingForQuestion(question) {
+    if (!question) {
+        return null;
+    }
+
+    if (question.motherId) {
+        return {
+            type: 'mother-core',
+            motherId: question.motherId
+        };
+    }
+
+    return {
+        type: 'question-specific',
+        questionId: question.id
+    };
+}
+
+function syncLatestAnswer(value) {
+    latestAnswer = String(value || '').trim();
+    resultText.value = String(value || '');
+    saveAnswerBtn.disabled = !latestAnswer || !currentPracticeQuestion();
+    updateReadingControls();
+}
+
+function showAnswer(value) {
+    resultSection.classList.remove('hidden');
+    answerEmpty.classList.add('hidden');
+    syncLatestAnswer(value);
+    sentenceIndex = 0;
+}
+
+function clearAnswer() {
+    latestAnswer = '';
+    resultText.value = '';
+    resultSection.classList.add('hidden');
+    answerEmpty.classList.remove('hidden');
+    savedAnswerStatus.textContent = '';
+    saveAnswerBtn.classList.add('hidden');
+    recordingSection.classList.add('hidden');
+}
+
+function renderSavedAnswerControls() {
+    const question = currentPracticeQuestion();
+    const material = activePracticeMaterial();
+    const saved = activePracticeSavedAnswer();
+
+    saveAnswerBtn.classList.toggle('hidden', !question);
+    saveAnswerBtn.disabled = !question || !latestAnswer;
+
+    if (!question) {
+        savedAnswerStatus.textContent = '';
+        return;
+    }
+
+    if (saved && latestAnswer && saved.content !== latestAnswer) {
+        savedAnswerStatus.textContent = '已生成新版本，点击保存后才会覆盖旧答案。';
+        return;
+    }
+
+    if (saved && material && isMaterialNewer(saved, material)) {
+        savedAnswerStatus.textContent = '素材已更新，可重新生成适配答案。';
+        return;
+    }
+
+    if (saved) {
+        savedAnswerStatus.textContent = `已保存答案 · ${new Date(saved.updatedAt).toLocaleString('zh-CN')}`;
+        return;
+    }
+
+    savedAnswerStatus.textContent = latestAnswer ? '这道题还没有保存答案。' : '';
 }
 
 function bindingLabel(binding) {
@@ -274,21 +364,28 @@ function renderPracticeMaterialControls() {
     if (question) {
         practiceMaterialGroup.classList.add('hidden');
         practiceMaterialMode.classList.remove('hidden');
+        prepareMaterialBtn.classList.toggle('hidden', Boolean(resolution));
+        const motherLabel = motherLabelForQuestion(question);
         practiceMaterialMode.textContent = resolution
-            ? `当前题目会自动使用「${resolution.material.title}」${resolution.bindingType === 'mother-core' ? '这条母题核心素材' : '这条专属素材'}。`
+            ? resolution.bindingType === 'mother-core'
+                ? `母题：${motherLabel} · 素材：${resolution.material.title}`
+                : `题目专属素材：${resolution.material.title}`
             : question.motherId
-                ? `当前题目已归入「${getMotherTopic(question.motherId)?.label || '对应母题'}」，但你还没为它准备核心素材。`
-                : '这道未分类题还没有专属素材；先按题目本身练也可以。';
+                ? `母题：${motherLabel} · 还没有核心素材，请先准备素材。`
+                : '这道未分类题还没有专属素材，请先准备素材。';
+        renderSavedAnswerControls();
         return;
     }
 
     practiceMaterialGroup.classList.remove('hidden');
     practiceMaterialMode.classList.add('hidden');
+    prepareMaterialBtn.classList.add('hidden');
 
     const current = selectedMaterial();
     selectedMaterialInfo.textContent = current
         ? `正在使用「${current.title}」${current.tags?.length ? ` · ${current.tags.join(' · ')}` : ''}`
         : materials.length ? '从素材库选择故事，答案会优先使用真实细节。' : '还没有素材？去“我的素材库”保存第一段真实经历。';
+    renderSavedAnswerControls();
 }
 
 function renderCoreMaterialGrid() {
@@ -522,21 +619,103 @@ function keywordText() {
     return categoryConfig[currentCategory].fields.map(([key, label]) => keywordsByCategory[currentCategory][key]?.trim() ? `${label}: ${keywordsByCategory[currentCategory][key].trim()}` : '').filter(Boolean).join('; ');
 }
 
+function openMissingMaterialEditor() {
+    const question = currentPracticeQuestion();
+    const binding = missingMaterialBindingForQuestion(question);
+    if (!question || !binding) {
+        return;
+    }
+
+    switchView('libraryView');
+    openEditor(null, binding);
+}
+
+function generationPayload(topic) {
+    const question = currentPracticeQuestion();
+    const material = activePracticeMaterial();
+
+    if (question) {
+        return {
+            task: 'adapt-answer',
+            questionId: question.id,
+            topic,
+            cues: question.cues || [],
+            motherLabel: motherLabelForQuestion(question),
+            personalMaterial: material
+        };
+    }
+
+    return {
+        task: 'model-answer',
+        topic,
+        category: currentCategory,
+        keywords: keywordText(),
+        structuredKeywords: keywordsByCategory[currentCategory],
+        personalMaterial: material
+    };
+}
+
 async function generateAnswer() {
     const topic = topicInput.value.trim();
     if (!topic) { alert('请先填写一道雅思 Part 2 题目。'); topicInput.focus(); return; }
-    generateBtn.disabled = true; loading.classList.remove('hidden'); latestAnswer = ''; resultText.innerHTML = ''; resultSection.classList.remove('hidden'); answerEmpty.classList.add('hidden');
+    const question = currentPracticeQuestion();
+    if (question && !activePracticeMaterial()) {
+        alert('这道题需要先绑定一条素材，才能生成适配答案。');
+        openMissingMaterialEditor();
+        return;
+    }
+    if (question && activePracticeSavedAnswer() && !window.confirm('这道题已经有保存答案。确定重新生成吗？')) {
+        return;
+    }
+    generateBtn.disabled = true; loading.classList.remove('hidden'); latestAnswer = ''; resultText.value = ''; resultSection.classList.remove('hidden'); answerEmpty.classList.add('hidden'); renderSavedAnswerControls();
     try {
-        const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: 'model-answer', topic, category: currentCategory, keywords: keywordText(), structuredKeywords: keywordsByCategory[currentCategory], personalMaterial: activePracticeMaterial() }) });
+        const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(generationPayload(topic)) });
         if (!response.ok) throw new Error(await getErrorMessage(response));
-        await readSseStream(response, (content) => { latestAnswer += content; resultText.innerHTML = escapeHtml(latestAnswer).replace(/\n/g, '<br>'); });
+        await readSseStream(response, (content) => { latestAnswer += content; resultText.value = latestAnswer; });
         if (!latestAnswer.trim()) throw new Error('没有生成答案，请重试。');
+        syncLatestAnswer(latestAnswer);
         sentenceIndex = 0;
         updateReadingControls();
+        renderSavedAnswerControls();
         recordingSection.classList.remove('hidden');
     } catch (error) {
-        resultSection.classList.add('hidden'); answerEmpty.classList.remove('hidden'); alert(`生成失败：${error.message}`);
+        if (!latestAnswer.trim()) clearAnswer();
+        alert(`生成失败：${error.message}`);
     } finally { generateBtn.disabled = false; loading.classList.add('hidden'); }
+}
+
+function saveCurrentAnswer() {
+    const question = currentPracticeQuestion();
+    const material = activePracticeMaterial();
+    const content = resultText.value.trim();
+    if (!question || !content) {
+        return;
+    }
+
+    const existing = activePracticeSavedAnswer();
+    if (existing && !window.confirm('确定覆盖这道题已经保存的答案吗？')) {
+        return;
+    }
+
+    const timestamp = new Date().toISOString();
+    questionBankState = {
+        ...questionBankState,
+        savedAnswers: saveAnswer(questionBankState.savedAnswers, {
+            questionId: question.id,
+            topic: question.prompt,
+            cues: question.cues || [],
+            motherId: question.motherId || null,
+            motherLabel: motherLabelForQuestion(question),
+            materialId: material?.id || '',
+            materialTitle: material?.title || '',
+            materialUpdatedAt: materialUpdatedAt(material),
+            content,
+            updatedAt: timestamp
+        })
+    };
+    persistBank();
+    syncLatestAnswer(content);
+    renderSavedAnswerControls();
 }
 
 function resetTimer() { clearInterval(timerId); timerId = null; timerSeconds = 120; countdownDisplay.textContent = formatTime(timerSeconds); }
@@ -1349,6 +1528,13 @@ function openInPractice(question) {
     selectedMaterialId = resolveMaterialForQuestion(materials, question)?.material?.id || '';
     topicInput.value = question.prompt;
     applyCategory(questionCategory(question));
+    const saved = activePracticeSavedAnswer();
+    if (saved?.content) {
+        showAnswer(saved.content);
+        recordingSection.classList.remove('hidden');
+    } else {
+        clearAnswer();
+    }
     renderMaterials();
     switchView('practiceView');
     topicInput.focus();
@@ -1725,10 +1911,14 @@ topicInput.addEventListener('input', () => {
     if (question && topicInput.value !== question.prompt) {
         practiceQuestionId = '';
         renderMaterials();
+        renderSavedAnswerControls();
     }
 });
+prepareMaterialBtn.addEventListener('click', openMissingMaterialEditor);
 closeMaterialEditorBtn.addEventListener('click', closeEditor); cancelMaterialBtn.addEventListener('click', closeEditor); saveMaterialBtn.addEventListener('click', saveMaterial);
 generateBtn.addEventListener('click', generateAnswer);
+resultText.addEventListener('input', () => { syncLatestAnswer(resultText.value); renderSavedAnswerControls(); });
+saveAnswerBtn.addEventListener('click', saveCurrentAnswer);
 recordBtn.addEventListener('click', () => mediaRecorder?.state === 'recording' ? stopRecording() : startRecording());
 transcriptEditor.addEventListener('input', invalidateConfirmedTranscript);
 confirmTranscriptBtn.addEventListener('click', confirmTranscript);

@@ -45,7 +45,10 @@ input:focus,textarea:focus,select:focus { border-color:var(--accent); box-shadow
 @keyframes pulse { 50% { opacity:.25; transform:scale(.65); } }
 .answer-panel { min-height:590px; }
 .answer-empty { margin-top:100px; color:var(--muted); font-family:var(--serif); font-size:1.2rem; line-height:1.65; text-align:center; }
-.answer-text { min-height:400px; color:#39342f; font-family:var(--serif); font-size:1.08rem; line-height:2; }
+.answer-text { display:block; width:100%; min-height:400px; color:#39342f; font-family:var(--serif); font-size:1.08rem; line-height:2; }
+.saved-answer-status { min-height:22px; margin:10px 0 0; color:var(--muted); font-size:.78rem; }
+.save-answer-row { display:flex; justify-content:flex-end; margin-top:10px; }
+.save-answer-row .secondary-button { width:auto; }
 .read-controls { display:flex; flex-wrap:wrap; gap:10px 20px; margin-top:24px; padding-top:16px; border-top:1px solid var(--line); }
 .read-control-group { display:flex; align-items:center; gap:6px; }.read-control-group>span { margin-right:2px; color:var(--muted); font-size:.76rem; font-weight:700; }
 .voice-option { border:1px solid var(--line); border-radius:99px; padding:4px 9px; color:var(--muted); background:transparent; font-size:.76rem; }.voice-option.active { border-color:var(--accent); color:var(--accent-dark); background:#fff7f3; font-weight:750; }
