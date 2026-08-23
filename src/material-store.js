@@ -93,3 +93,15 @@ export function resolveMaterialForQuestion(materials, question) {
   const material = getQuestionMaterial(materials, question.id);
   return material ? { material, bindingType: 'question-specific' } : null;
 }
+
+export function pickPracticeMaterial(materials, options = {}) {
+  const list = normalizeList(materials);
+  const practiceQuestion = options.practiceQuestion || null;
+  const selectedMaterialId = options.selectedMaterialId || '';
+
+  if (practiceQuestion) {
+    return resolveMaterialForQuestion(list, practiceQuestion)?.material || null;
+  }
+
+  return list.find((material) => material?.id === selectedMaterialId) || null;
+}

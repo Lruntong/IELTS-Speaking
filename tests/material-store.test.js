@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   getCoreMaterial,
   getQuestionMaterial,
+  pickPracticeMaterial,
   resolveMaterialForQuestion,
   upsertCoreMaterial,
   upsertQuestionMaterial,
@@ -120,5 +121,56 @@ test('resolveMaterialForQuestion returns null when no matching binding exists', 
       }
     ),
     null
+  );
+});
+
+test('pickPracticeMaterial keeps bank-question practice isolated from unrelated manual selections', () => {
+  const materials = [
+    {
+      id: 'manual-1',
+      title: '手动选择的旧素材',
+      story: '不该泄漏到题库题目里',
+      tags: ['legacy'],
+      createdAt: '2026-08-20T00:00:00.000Z',
+    },
+    {
+      id: 'core-1',
+      type: 'mother-core',
+      motherId: 'M2',
+      title: '人物故事',
+      story: '核心母题故事',
+      tags: ['人物'],
+      createdAt: '2026-08-21T00:00:00.000Z',
+    },
+  ];
+
+  assert.equal(
+    pickPracticeMaterial(materials, {
+      practiceQuestion: {
+        id: 'q-missing',
+        motherId: 'M7',
+      },
+      selectedMaterialId: 'manual-1',
+    }),
+    null
+  );
+
+  assert.equal(
+    pickPracticeMaterial(materials, {
+      practiceQuestion: null,
+      selectedMaterialId: 'manual-1',
+    })?.id,
+    'manual-1'
+  );
+
+  assert.equal(
+    pickPracticeMaterial(materials, {
+      practiceQuestion: {
+        id: 'q-classified',
+        motherId: 'M2',
+      },
+      selectedMaterialId: 'manual-1',
+    })?.id,
+    'core-1'
   );
 });

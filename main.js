@@ -7,6 +7,7 @@ import { classifyQuestionLocally } from './src/local-classifier.js';
 import {
     getCoreMaterial,
     getQuestionMaterial,
+    pickPracticeMaterial,
     resolveMaterialForQuestion,
     upsertCoreMaterial,
     upsertQuestionMaterial
@@ -147,7 +148,10 @@ function currentPracticeMaterialResolution() {
 }
 
 function activePracticeMaterial() {
-    return currentPracticeMaterialResolution()?.material || selectedMaterial();
+    return pickPracticeMaterial(materials, {
+        practiceQuestion: currentPracticeQuestion(),
+        selectedMaterialId
+    });
 }
 
 function bindingLabel(binding) {
