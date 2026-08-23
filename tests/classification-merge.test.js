@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeClassificationResults } from '../src/classification-merge.js';
+import {
+  mergeClassificationResults,
+  resolveDraftMotherId,
+} from '../src/classification-merge.js';
 
 test('inherited wins, remote fills next, local fills omissions', () => {
   const questions = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
@@ -36,4 +39,15 @@ test('ignores unknown ids and does not mutate inputs', () => {
     { id: 'missing', motherId: 'M1' },
   ]);
   assert.notStrictEqual(result, inherited);
+});
+
+test('confirmed null override beats stale imported draft suggestions', () => {
+  const result = resolveDraftMotherId(
+    { id: 'q1', motherId: null },
+    { q1: null },
+    new Map([['q1', 'M4']]),
+    () => 'M2'
+  );
+
+  assert.equal(result, null);
 });

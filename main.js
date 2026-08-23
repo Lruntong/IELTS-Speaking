@@ -1,5 +1,8 @@
 import { OFFICIAL_QUESTION_BANK } from './data/question-bank.js';
-import { mergeClassificationResults } from './src/classification-merge.js';
+import {
+    mergeClassificationResults,
+    resolveDraftMotherId
+} from './src/classification-merge.js';
 import { classifyQuestionLocally } from './src/local-classifier.js';
 import { MOTHER_TOPICS, getMotherTopic } from './src/mother-topics.js';
 import {
@@ -513,15 +516,12 @@ function rememberImportedDraftAssignments(assignments) {
 }
 
 function getDraftSuggestedMotherId(question) {
-    if (question?.motherId) {
-        return question.motherId;
-    }
-
-    if (question?.id && importedClassificationDrafts.has(question.id)) {
-        return importedClassificationDrafts.get(question.id) || null;
-    }
-
-    return getLocalClassification(question);
+    return resolveDraftMotherId(
+        question,
+        questionBankState.classificationOverrides,
+        importedClassificationDrafts,
+        getLocalClassification
+    );
 }
 
 async function requestRemoteClassifications(questions) {
