@@ -12,6 +12,10 @@ import {
     upsertCoreMaterial,
     upsertQuestionMaterial
 } from './src/material-store.js';
+import {
+    findReusedRanges,
+    renderHighlightedAnswer
+} from './src/material-highlighter.js';
 import { MOTHER_TOPICS, getMotherTopic } from './src/mother-topics.js';
 import {
     createEmptyBankState,
@@ -43,6 +47,7 @@ const selectedMaterialInfo = $('#selectedMaterialInfo');
 const materialCount = $('#materialCount');
 const resultSection = $('#resultSection');
 const resultText = $('#resultText');
+const highlightedAnswer = document.createElement('div');
 const answerEmpty = $('#answerEmpty');
 const loading = $('#loading');
 const readAloudBtn = $('#readAloudBtn');
@@ -51,6 +56,7 @@ const readingStatus = $('#readingStatus');
 const voiceOptions = $$('.voice-option');
 const copyBtn = $('#copyBtn');
 const saveAnswerBtn = $('#saveAnswerBtn');
+const editAnswerBtn = document.createElement('button');
 const savedAnswerStatus = $('#savedAnswerStatus');
 const recordingSection = $('#recordingSection');
 const recordBtn = $('#recordBtn');
@@ -95,6 +101,7 @@ let selectedMaterialId = '';
 let editingMaterialId = '';
 let editingMaterialBinding = null;
 let latestAnswer = '';
+let answerReviewMode = false;
 let practiceQuestionId = '';
 let timerSeconds = 120;
 let timerId = null;
@@ -113,6 +120,17 @@ let sentenceIndex = 0;
 Object.entries(categoryConfig).forEach(([category, config]) => {
     keywordsByCategory[category] = Object.fromEntries(config.fields.map(([key]) => [key, '']));
 });
+
+highlightedAnswer.id = 'highlightedAnswer';
+highlightedAnswer.className = 'answer-text highlighted-answer hidden';
+highlightedAnswer.tabIndex = 0;
+highlightedAnswer.setAttribute('aria-label', '保存答案复盘视图');
+resultText.insertAdjacentElement('afterend', highlightedAnswer);
+
+editAnswerBtn.type = 'button';
+editAnswerBtn.className = 'text-button hidden';
+editAnswerBtn.textContent = '编辑答案';
+saveAnswerBtn.insertAdjacentElement('beforebegin', editAnswerBtn);
 
 function formatTime(seconds) {
     return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
@@ -164,6 +182,10 @@ function activePracticeSavedAnswer() {
     return question ? getSavedAnswer(questionBankState.savedAnswers, question.id) : null;
 }
 
+function activePracticeMaterialSourceLabel() {
+    return currentPracticeMaterialResolution()?.bindingType || activePracticeMaterial()?.type || 'mother-core';
+}
+
 function materialUpdatedAt(material) {
     return material?.updatedAt || material?.createdAt || '';
 }
@@ -193,20 +215,42 @@ function missingMaterialBindingForQuestion(question) {
 function syncLatestAnswer(value) {
     latestAnswer = String(value || '').trim();
     resultText.value = String(value || '');
+    if (answerReviewMode) {
+        renderHighlightedReviewAnswer();
+    }
     saveAnswerBtn.disabled = !latestAnswer || !currentPracticeQuestion();
     updateReadingControls();
 }
 
-function showAnswer(value) {
+function renderHighlightedReviewAnswer() {
+    const material = activePracticeMaterial();
+    const ranges = findReusedRanges(material?.story || '', latestAnswer);
+    renderHighlightedAnswer(highlightedAnswer, latestAnswer, ranges, activePracticeMaterialSourceLabel());
+}
+
+function setAnswerReviewMode(enabled) {
+    answerReviewMode = Boolean(enabled && latestAnswer);
+    resultText.classList.toggle('hidden', answerReviewMode);
+    highlightedAnswer.classList.toggle('hidden', !answerReviewMode);
+    if (answerReviewMode) {
+        renderHighlightedReviewAnswer();
+    }
+    renderSavedAnswerControls();
+}
+
+function showAnswer(value, options = {}) {
     resultSection.classList.remove('hidden');
     answerEmpty.classList.add('hidden');
     syncLatestAnswer(value);
+    setAnswerReviewMode(Boolean(options.reviewMode));
     sentenceIndex = 0;
 }
 
 function clearAnswer() {
     latestAnswer = '';
     resultText.value = '';
+    setAnswerReviewMode(false);
+    highlightedAnswer.replaceChildren();
     resultSection.classList.add('hidden');
     answerEmpty.classList.remove('hidden');
     savedAnswerStatus.textContent = '';
@@ -284,6 +328,7 @@ function exitBankQuestionContextForTopicEdit(typedTopic) {
     selectedMaterialId = reset.selectedMaterialId;
     latestAnswer = reset.latestAnswer;
     resultText.value = reset.answerText;
+    setAnswerReviewMode(false);
     resultSection.classList.toggle('hidden', !reset.resultVisible);
     answerEmpty.classList.toggle('hidden', reset.resultVisible);
     savedAnswerStatus.textContent = reset.savedAnswerStatus;
@@ -296,8 +341,9 @@ function renderSavedAnswerControls() {
     const material = activePracticeMaterial();
     const saved = activePracticeSavedAnswer();
 
-    saveAnswerBtn.classList.toggle('hidden', !question);
-    saveAnswerBtn.disabled = !question || !latestAnswer;
+    editAnswerBtn.classList.toggle('hidden', !question || !answerReviewMode);
+    saveAnswerBtn.classList.toggle('hidden', !question || answerReviewMode);
+    saveAnswerBtn.disabled = !question || !latestAnswer || answerReviewMode;
 
     if (!question) {
         savedAnswerStatus.textContent = '';
@@ -356,21 +402,23 @@ function materialBinding(material) {
 function applyPracticeMaterialSelection(materialId) {
     practiceQuestionId = '';
     selectedMaterialId = materialId || '';
+    if (answerReviewMode) {
+        renderHighlightedReviewAnswer();
+    }
 }
 
 function renderMaterialSelect() {
     const current = selectedMaterial();
-    materialSelect.innerHTML = '';
     const empty = document.createElement('option');
     empty.value = '';
     empty.textContent = '暂不使用素材库';
-    materialSelect.appendChild(empty);
-    materials.forEach((material) => {
+    const options = materials.map((material) => {
         const option = document.createElement('option');
         option.value = material.id;
         option.textContent = material.title;
-        materialSelect.appendChild(option);
+        return option;
     });
+    materialSelect.replaceChildren(empty, ...options);
     materialSelect.value = current?.id || '';
     materialCount.textContent = materials.length;
 }
@@ -745,7 +793,7 @@ async function generateAnswer() {
     if (question && activePracticeSavedAnswer() && !window.confirm('这道题已经有保存答案。确定重新生成吗？')) {
         return;
     }
-    generateBtn.disabled = true; loading.classList.remove('hidden'); latestAnswer = ''; resultText.value = ''; resultSection.classList.remove('hidden'); answerEmpty.classList.add('hidden'); renderSavedAnswerControls();
+    generateBtn.disabled = true; loading.classList.remove('hidden'); latestAnswer = ''; resultText.value = ''; resultSection.classList.remove('hidden'); answerEmpty.classList.add('hidden'); setAnswerReviewMode(false); renderSavedAnswerControls();
     try {
         const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(generationPayload(topic)) });
         if (!response.ok) throw new Error(await getErrorMessage(response));
@@ -793,6 +841,7 @@ function saveCurrentAnswer() {
     };
     persistBank();
     syncLatestAnswer(content);
+    setAnswerReviewMode(true);
     renderSavedAnswerControls();
 }
 
@@ -883,7 +932,9 @@ async function reviewSpeaking() {
     if (!transcript) return;
     reviewBtn.disabled = true; reviewLoading.classList.remove('hidden'); reviewPanel.classList.add('hidden'); reviewText.textContent = '';
     try {
-        const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: 'speaking-review', topic: topicInput.value.trim(), transcript, referenceAnswer: latestAnswer }) });
+        const material = activePracticeMaterial();
+        const question = currentPracticeQuestion();
+        const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: 'speaking-review', topic: topicInput.value.trim(), transcript, referenceAnswer: latestAnswer, questionMotherId: question?.motherId || '', sourceMaterial: material || '' }) });
         if (!response.ok) throw new Error(await getErrorMessage(response));
         let review = ''; await readSseStream(response, (content) => { review += content; reviewText.textContent = review; });
         if (!review.trim()) throw new Error('没有生成复盘。'); reviewPanel.classList.remove('hidden');
@@ -1608,7 +1659,7 @@ function openInPractice(question) {
     applyCategory(questionCategory(question));
     const saved = activePracticeSavedAnswer();
     if (saved?.content) {
-        showAnswer(saved.content);
+        showAnswer(saved.content, { reviewMode: true });
         recordingSection.classList.remove('hidden');
     } else {
         clearAnswer();
@@ -1996,6 +2047,7 @@ prepareMaterialBtn.addEventListener('click', openMissingMaterialEditor);
 closeMaterialEditorBtn.addEventListener('click', closeEditor); cancelMaterialBtn.addEventListener('click', closeEditor); saveMaterialBtn.addEventListener('click', saveMaterial);
 generateBtn.addEventListener('click', generateAnswer);
 resultText.addEventListener('input', () => { syncLatestAnswer(resultText.value); renderSavedAnswerControls(); });
+editAnswerBtn.addEventListener('click', () => { setAnswerReviewMode(false); resultText.focus(); });
 saveAnswerBtn.addEventListener('click', saveCurrentAnswer);
 recordBtn.addEventListener('click', () => mediaRecorder?.state === 'recording' ? stopRecording() : startRecording());
 transcriptEditor.addEventListener('input', invalidateConfirmedTranscript);
@@ -2011,5 +2063,4 @@ if ('speechSynthesis' in window) speechSynthesis.addEventListener('voiceschanged
 copyBtn.addEventListener('click', async () => { if (!latestAnswer) return; try { await navigator.clipboard.writeText(latestAnswer); copyBtn.textContent = '已复制'; setTimeout(() => { copyBtn.textContent = '复制答案'; }, 1300); } catch { alert('复制失败，请手动选择答案。'); } });
 
 loadMaterials(); applyCategory(currentCategory); resetTimer(); updateReadingControls();
-makeDroppable(poolCell, '');
-loadBank(); renderBank(); updateRecommendButton();
+loadBank(); renderBank();

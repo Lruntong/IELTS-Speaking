@@ -50,6 +50,21 @@ function formatPersonalMaterial(personalMaterial) {
     return `Title: ${title}\nTags: ${tags.join(', ') || 'None'}\nStory: ${story}`;
 }
 
+function formatSourceMaterial(sourceMaterial) {
+    if (!sourceMaterial || typeof sourceMaterial === 'string') {
+        return cleanText(sourceMaterial, 1600);
+    }
+
+    if (typeof sourceMaterial !== 'object' || Array.isArray(sourceMaterial)) {
+        return '';
+    }
+
+    const title = cleanText(sourceMaterial.title, 100);
+    const story = cleanText(sourceMaterial.story, 1600);
+    if (!title && !story) return '';
+    return [title ? `Title: ${title}` : '', story ? `Story: ${story}` : ''].filter(Boolean).join('\n');
+}
+
 function formatCues(cues) {
     return Array.isArray(cues)
         ? cues.map((cue) => cleanText(cue, 120)).filter(Boolean).slice(0, 6).join('; ')
@@ -66,13 +81,17 @@ export function buildGenerationMessages({
     structuredKeywords,
     personalMaterial,
     cues,
-    motherLabel
+    motherLabel,
+    questionMotherId,
+    sourceMaterial
 }) {
     const categoryLabel = categoryLabels[category] || '未分类';
     const materialText = formatPersonalMaterial(personalMaterial);
     const structuredText = formatStructuredKeywords(structuredKeywords);
     const cueText = formatCues(cues);
     const cleanMotherLabel = cleanText(motherLabel, 80);
+    const cleanQuestionMotherId = cleanText(questionMotherId, 20);
+    const sourceMaterialText = formatSourceMaterial(sourceMaterial);
 
     if (task === 'memory-outline') {
         return [
@@ -88,11 +107,11 @@ export function buildGenerationMessages({
         return [
             {
                 role: 'system',
-                content: `You are a supportive IELTS Speaking coach for a learner around Band 6. Review the learner's transcribed Part 2 response. The transcript may contain speech-recognition errors, so do not over-correct isolated words. Give concise, practical feedback in Simplified Chinese. Do NOT give a precise IELTS band score. Output plain text only, using exactly these sections: 做得好的：, 最值得改的一点：, 更自然的说法：, 下次挑战：. Give 1-2 bullets per section. Focus on content coverage, fluency, clarity, grammar, and easy-to-say alternatives.`
+                content: `You are a supportive IELTS Speaking coach for a learner around Band 6. Review the learner's transcribed Part 2 response. The transcript may contain speech-recognition errors, so do not over-correct isolated words. Give concise, practical feedback in Simplified Chinese. Do NOT give a precise IELTS band score. Output plain text only, using exactly these sections: 做得好的：, 最值得改的一点：, 更自然的说法：, 下次挑战：. Give 1-2 bullets per section. Focus on content coverage, fluency, clarity, grammar, and easy-to-say alternatives. Reuse of facts, personal details, and isolated keywords from the source material is normal. Only gently mention memorization when long wording and sequence are unusually close to the generated answer. Do not output a memorization percentage.`
             },
             {
                 role: 'user',
-                content: `Question: ${topic || 'Not provided'}\nLearner transcript:\n${transcript}\n\nReference answer for context only (do not ask learner to memorize it):\n${referenceAnswer || 'Not provided'}`
+                content: `Question: ${topic || 'Not provided'}\nMother topic id: ${cleanQuestionMotherId || 'Not provided'}\nLearner transcript:\n${transcript}\n\nReference answer for context only (do not ask learner to memorize it):\n${referenceAnswer || 'Not provided'}\n\nSource material used to generate the answer (facts and isolated keywords are allowed context):\n${sourceMaterialText || 'Not provided'}`
             }
         ];
     }
@@ -275,6 +294,7 @@ export default async function handler(req, res) {
     const keywords = cleanText(body.keywords);
     const transcript = cleanText(body.transcript, 6000);
     const referenceAnswer = cleanText(body.referenceAnswer, 3000);
+    const sourceMaterial = formatSourceMaterial(body.sourceMaterial);
 
     if ((task === 'slot-recommend' || task === 'mother-classify')) {
         return handleMotherClassify(res, apiKey, body.questions);
@@ -314,7 +334,9 @@ export default async function handler(req, res) {
         structuredKeywords: body.structuredKeywords,
         personalMaterial: body.personalMaterial,
         cues: body.cues,
-        motherLabel: body.motherLabel
+        motherLabel: body.motherLabel,
+        questionMotherId: body.questionMotherId,
+        sourceMaterial
     });
 
     try {

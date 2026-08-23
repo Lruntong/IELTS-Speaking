@@ -116,6 +116,25 @@ test('importSeasonQuestions skips same-season duplicates, inherits motherId acro
   assert.equal(crossSeason.userQuestions[1].motherId, 'M1');
 });
 
+test('importSeasonQuestions applies the selected season when imported rows contain an empty season field', () => {
+  const state = createEmptyBankState();
+
+  const imported = importSeasonQuestions(
+    state,
+    [
+      {
+        prompt: 'Describe a place where you felt calm.',
+        season: '',
+      },
+    ],
+    '2099-08',
+    () => 'q-empty-season'
+  );
+
+  assert.equal(imported.userQuestions[0].seasonId, '2099-08');
+  assert.equal(imported.activeSeasonId, '2099-08');
+});
+
 test('importSeasonQuestions skips same-season official duplicates from merged state', () => {
   const mergedState = mergeOfficialQuestions(createEmptyBankState(), [
     {

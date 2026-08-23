@@ -25,3 +25,22 @@ test('adapt-answer prompt requires exactly three natural paragraphs without inve
   assert.match(prompt, /markdown headings/i);
   assert.match(prompt, /和外公湖边散步/);
 });
+
+test('speaking-review prompt keeps four Chinese headings and treats source material as context', () => {
+  const messages = buildGenerationMessages({
+    task: 'speaking-review',
+    topic: 'Describe an outdoor activity.',
+    transcript: 'I went fishing with my grandfather beside a quiet lake.',
+    referenceAnswer: 'I went fishing with my grandfather beside a quiet lake.',
+    questionMotherId: 'M3',
+    sourceMaterial: '我和外公在湖边钓鱼，那天早上阳光很好。',
+  });
+
+  const prompt = messages.map((message) => message.content).join('\n');
+
+  assert.match(prompt, /做得好的：, 最值得改的一点：, 更自然的说法：, 下次挑战：/);
+  assert.match(prompt, /Source material used to generate the answer/);
+  assert.match(prompt, /M3/);
+  assert.match(prompt, /isolated keywords/i);
+  assert.match(prompt, /Do not output a memorization percentage/i);
+});

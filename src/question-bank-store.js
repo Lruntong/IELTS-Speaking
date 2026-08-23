@@ -99,7 +99,10 @@ function normalizeCreatedAt(value, fallback = FALLBACK_CREATED_AT) {
 function sanitizeQuestion(question, defaults = {}) {
   const baseQuestion = question && typeof question === 'object' ? cloneValue(question) : {};
   const prompt = String(baseQuestion.prompt ?? defaults.prompt ?? '').trim();
-  const seasonValue = baseQuestion.seasonId ?? baseQuestion.season ?? defaults.seasonId ?? defaults.season;
+  const rawSeasonValue = baseQuestion.seasonId ?? baseQuestion.season;
+  const seasonValue = String(rawSeasonValue ?? '').trim()
+    ? rawSeasonValue
+    : defaults.seasonId ?? defaults.season;
   const seasonId = String(seasonValue ?? '').trim();
   const normalizedPrompt = normalizePrompt(baseQuestion.normalizedPrompt ?? prompt);
   const createdAtFallback = seasonId ? `${seasonId}T00:00:00.000Z` : FALLBACK_CREATED_AT;
