@@ -10,6 +10,11 @@ function hasOwn(record, key) {
   return !!record && Object.prototype.hasOwnProperty.call(record, key);
 }
 
+export function isConfirmedUnclassified(classificationOverrides, questionId) {
+  return hasOwn(classificationOverrides, questionId)
+    && classificationOverrides[questionId] === null;
+}
+
 function hasDraftValue(drafts, key) {
   if (drafts instanceof Map) {
     return drafts.has(key);

@@ -6,10 +6,19 @@ import {
   getQuestionMaterial,
   parseStoredMaterials,
   pickPracticeMaterial,
+  shouldInvalidatePracticeForMaterialChange,
   resolveMaterialForQuestion,
   upsertCoreMaterial,
   upsertQuestionMaterial,
 } from '../src/material-store.js';
+
+test('editing or replacing the active bound material invalidates its old answer request', () => {
+  const active = { id: 'old-core', type: 'mother-core', motherId: 'M1' };
+
+  assert.equal(shouldInvalidatePracticeForMaterialChange(active, 'old-core', { type: 'mother-core', motherId: 'M1' }), true);
+  assert.equal(shouldInvalidatePracticeForMaterialChange(active, '', { type: 'mother-core', motherId: 'M1' }), true);
+  assert.equal(shouldInvalidatePracticeForMaterialChange(active, 'other', { type: 'mother-core', motherId: 'M2' }), false);
+});
 
 test('upsertCoreMaterial replaces the existing mother-topic slot and preserves unrelated materials', () => {
   const legacyMaterial = {

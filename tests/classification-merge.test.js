@@ -1,9 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  isConfirmedUnclassified,
   mergeClassificationResults,
   resolveDraftMotherId,
 } from '../src/classification-merge.js';
+
+test('an own null override permanently outranks local classification helpers', () => {
+  assert.equal(isConfirmedUnclassified({ q1: null }, 'q1'), true);
+  assert.equal(isConfirmedUnclassified({}, 'q1'), false);
+  assert.equal(isConfirmedUnclassified({ q1: 'M1' }, 'q1'), false);
+});
 
 test('inherited wins, remote fills next, local fills omissions', () => {
   const questions = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];

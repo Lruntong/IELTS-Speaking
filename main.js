@@ -1,8 +1,10 @@
 import { OFFICIAL_QUESTION_BANK } from './data/question-bank.js';
 import {
+    isConfirmedUnclassified,
     mergeClassificationResults,
     resolveDraftMotherId
 } from './src/classification-merge.js';
+import { isCurrentImportRequest } from './src/import-session-state.js';
 import { classifyQuestionLocally } from './src/local-classifier.js';
 import {
     getCoreMaterial,
@@ -10,6 +12,7 @@ import {
     parseStoredMaterials,
     pickPracticeMaterial,
     resolveMaterialForQuestion,
+    shouldInvalidatePracticeForMaterialChange,
     upsertCoreMaterial,
     upsertQuestionMaterial
 } from './src/material-store.js';
@@ -725,6 +728,12 @@ function saveMaterial() {
     const tags = [...new Set(materialTags.value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean))].slice(0, 8);
     if (!title || !story) { alert('请填写素材名称和真实细节。'); return; }
     const current = editingMaterialId ? materials.find((material) => material.id === editingMaterialId) : null;
+    const activeMaterialBeforeSave = activePracticeMaterial();
+    const invalidatesActivePractice = shouldInvalidatePracticeForMaterialChange(
+        activeMaterialBeforeSave,
+        editingMaterialId,
+        editingMaterialBinding
+    );
     const timestamp = new Date().toISOString();
 
     if (editingMaterialBinding?.type === 'mother-core') {
@@ -759,7 +768,19 @@ function saveMaterial() {
         materials.unshift({ id, title, story, tags, createdAt: timestamp, updatedAt: timestamp });
         selectedMaterialId = id;
     }
-    persistMaterials(); renderMaterials(); closeEditor();
+    persistMaterials();
+    if (invalidatesActivePractice) {
+        const question = currentPracticeQuestion();
+        const nextMaterialId = question
+            ? resolveMaterialForQuestion(materials, question)?.material?.id || ''
+            : materials.find((material) => material.id === editingMaterialId)?.id || selectedMaterialId;
+        transitionPracticeContext({
+            questionId: question?.id || '',
+            materialId: nextMaterialId,
+            topic: topicInput.value
+        });
+    }
+    renderMaterials(); closeEditor();
 }
 
 function applyCategory(category) {
@@ -1133,6 +1154,7 @@ let classificationDrag = null;
 let classificationNativeQuestionId = '';
 let latestClassificationProvider = 'local';
 let importInProgress = false;
+let importRequestId = 0;
 
 const bankSeason = $('#bankSeason');
 const bankText = $('#bankText');
@@ -1335,7 +1357,11 @@ function getBaseQuestion(questionId) {
 }
 
 function questionCategory(question) {
-    const topic = getMotherTopic(question.motherId || getLocalClassification(question));
+    const bankState = pendingImport?.state || questionBankState;
+    const localMotherId = isConfirmedUnclassified(bankState.classificationOverrides, question.id)
+        ? null
+        : getLocalClassification(question);
+    const topic = getMotherTopic(question.motherId || localMotherId);
     return topic ? TOPIC_TO_CATEGORY[topic.legacyId] : currentCategory;
 }
 
@@ -1471,6 +1497,10 @@ async function importQuestions(items, seasonFallback) {
         return false;
     }
 
+    const importSession = {
+        stateAtStart: questionBankState,
+        requestId: ++importRequestId
+    };
     let nextState = questionBankState;
     let added = 0;
     let submitted = 0;
@@ -1515,6 +1545,14 @@ async function importQuestions(items, seasonFallback) {
         importTextBtn.disabled = false;
         importFileBtn.disabled = false;
         sampleBankBtn.disabled = false;
+    }
+    if (!isCurrentImportRequest(importSession, questionBankState, importRequestId)) {
+        addedQuestions.forEach((question) => {
+            importedClassificationDrafts.delete(question.id);
+            localClassificationCache.delete(question.id);
+        });
+        importStatus.textContent = '题库状态已变化，本次导入结果已作废，请重新导入。';
+        return false;
     }
     pendingImport = {
         state: nextState,
@@ -1614,7 +1652,11 @@ function createQuestionCard(question, { previewOnly = false, draftMotherId = nul
             badges.appendChild(confirmedBadge);
         }
 
-        const localMotherId = !confirmedMotherId ? getLocalClassification(question) : null;
+        const bankState = pendingImport?.state || questionBankState;
+        const localMotherId = !confirmedMotherId
+            && !isConfirmedUnclassified(bankState.classificationOverrides, question.id)
+            ? getLocalClassification(question)
+            : null;
         if (localMotherId) {
             const localBadge = document.createElement('span');
             localBadge.className = 'q-status-badge accent';

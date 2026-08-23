@@ -128,3 +128,15 @@ export function pickPracticeMaterial(materials, options = {}) {
 
   return list.find((material) => material?.id === selectedMaterialId) || null;
 }
+
+export function shouldInvalidatePracticeForMaterialChange(activeMaterial, editedMaterialId, editedBinding) {
+  if (!activeMaterial) return false;
+  if (editedMaterialId && activeMaterial.id === editedMaterialId) return true;
+  if (editedBinding?.type === 'mother-core') {
+    return activeMaterial.type === 'mother-core' && activeMaterial.motherId === editedBinding.motherId;
+  }
+  if (editedBinding?.type === 'question-specific') {
+    return activeMaterial.type === 'question-specific' && activeMaterial.questionId === editedBinding.questionId;
+  }
+  return false;
+}
