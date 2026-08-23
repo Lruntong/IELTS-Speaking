@@ -3,7 +3,7 @@ import { classifyQuestionLocally } from './src/local-classifier.js';
 import { MOTHER_TOPICS, getMotherTopic } from './src/mother-topics.js';
 import {
     createEmptyBankState,
-    importSeasonQuestions,
+    importSeasonQuestionsWithOfficial,
     mergeOfficialQuestions,
     migrateLegacyBank,
     serializeBankState
@@ -487,10 +487,6 @@ function makeQuestionId() {
     return `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function topicSortValue(topicId) {
-    return MOTHER_TOPICS.findIndex((topic) => topic.id === topicId);
-}
-
 function sortSeasons(seasons) {
     return [...seasons].sort((left, right) => String(right.id).localeCompare(String(left.id)));
 }
@@ -728,7 +724,13 @@ function importQuestions(items, seasonFallback) {
     groups.forEach(({ seasonId, items: seasonItems }) => {
         submitted += seasonItems.length;
         const before = nextState.userQuestions.length;
-        nextState = importSeasonQuestions(nextState, seasonItems, seasonId, makeQuestionId);
+        nextState = importSeasonQuestionsWithOfficial(
+            nextState,
+            OFFICIAL_QUESTION_BANK,
+            seasonItems,
+            seasonId,
+            makeQuestionId
+        );
         added += nextState.userQuestions.length - before;
     });
 

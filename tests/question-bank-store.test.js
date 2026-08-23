@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   createEmptyBankState,
+  importSeasonQuestionsWithOfficial,
   importSeasonQuestions,
   mergeOfficialQuestions,
   migrateLegacyBank,
@@ -168,6 +169,53 @@ test('importSeasonQuestions inherits motherId across seasons from official merge
   assert.equal(imported.userQuestions[0].motherId, 'M5');
 });
 
+test('importSeasonQuestionsWithOfficial merges official questions into import-time duplicate and inheritance checks', () => {
+  const rawState = createEmptyBankState();
+  const officialQuestions = [
+    {
+      id: 'official-duplicate',
+      prompt: 'Describe an old person you enjoy talking to.',
+      cues: [],
+      tags: [],
+      seasonId: '2026-05-08',
+      motherId: 'M1',
+      source: 'official',
+      normalizedPrompt: 'describe an old person you enjoy talking to',
+      createdAt: '2026-05-08T00:00:00.000Z',
+    },
+    {
+      id: 'official-inherit',
+      prompt: 'Describe a natural place you would like to visit again.',
+      cues: [],
+      tags: [],
+      seasonId: '2026-05-08',
+      motherId: 'M5',
+      source: 'official',
+      normalizedPrompt: 'describe a natural place you would like to visit again',
+      createdAt: '2026-05-08T00:00:00.000Z',
+    },
+  ];
+
+  const duplicateBlocked = importSeasonQuestionsWithOfficial(
+    rawState,
+    officialQuestions,
+    [{ prompt: 'Describe an old person you enjoy talking to.' }],
+    '2026-05-08',
+    () => 'generated-duplicate'
+  );
+  const inheritedAcrossSeason = importSeasonQuestionsWithOfficial(
+    rawState,
+    officialQuestions,
+    [{ prompt: 'Describe a natural place you would like to visit again.' }],
+    '2026-09-12',
+    () => 'generated-inherited'
+  );
+
+  assert.equal(duplicateBlocked.userQuestions.length, 0);
+  assert.equal(inheritedAcrossSeason.userQuestions[0].motherId, 'M5');
+  assert.equal(inheritedAcrossSeason.questions, undefined);
+});
+
 test('migrateLegacyBank tolerates malformed importedAt values', () => {
   const migrated = migrateLegacyBank({
     questions: [
@@ -212,4 +260,31 @@ test('mergeOfficialQuestions respects classification overrides and serializeBank
   assert.equal(serialized.questions[0].motherId, 'M2');
   assert.notEqual(serialized, merged);
   assert.equal(serialized.questions[0].source, 'official');
+});
+
+test('mergeOfficialQuestions applies classification overrides to user questions without mutating userQuestions', () => {
+  const state = {
+    ...createEmptyBankState(),
+    userQuestions: [
+      {
+        id: 'user-override',
+        prompt: 'Describe a memorable teacher.',
+        cues: [],
+        tags: [],
+        seasonId: '2026-09-12',
+        motherId: null,
+        source: 'user',
+        normalizedPrompt: 'describe a memorable teacher',
+        createdAt: '2026-09-12T00:00:00.000Z',
+      },
+    ],
+    classificationOverrides: {
+      'user-override': 'M1',
+    },
+  };
+
+  const merged = mergeOfficialQuestions(state, []);
+
+  assert.equal(merged.questions[0].motherId, 'M1');
+  assert.equal(state.userQuestions[0].motherId, null);
 });

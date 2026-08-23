@@ -243,7 +243,12 @@ export function mergeOfficialQuestions(state, officialQuestions) {
         ? nextState.classificationOverrides[question.id]
         : question.motherId,
     })),
-    ...nextState.userQuestions,
+    ...nextState.userQuestions.map((question) => ({
+      ...question,
+      motherId: hasOwn(nextState.classificationOverrides, question.id)
+        ? nextState.classificationOverrides[question.id]
+        : question.motherId,
+    })),
   ];
   const allSeasons = [...nextState.seasons];
 
@@ -261,6 +266,19 @@ export function mergeOfficialQuestions(state, officialQuestions) {
     seasons: allSeasons,
     questions: sortQuestionsByCreatedAt(mergedQuestions),
   };
+}
+
+export function importSeasonQuestionsWithOfficial(
+  state,
+  officialQuestions,
+  items,
+  seasonId,
+  createId = defaultQuestionId
+) {
+  const mergedState = mergeOfficialQuestions(state, officialQuestions);
+  const importedState = importSeasonQuestions(mergedState, items, seasonId, createId);
+  const { questions, ...persistableState } = importedState;
+  return persistableState;
 }
 
 export function importSeasonQuestions(state, items, seasonId, createId = defaultQuestionId) {
