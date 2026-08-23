@@ -4,6 +4,13 @@ import {
     resolveDraftMotherId
 } from './src/classification-merge.js';
 import { classifyQuestionLocally } from './src/local-classifier.js';
+import {
+    getCoreMaterial,
+    getQuestionMaterial,
+    resolveMaterialForQuestion,
+    upsertCoreMaterial,
+    upsertQuestionMaterial
+} from './src/material-store.js';
 import { MOTHER_TOPICS, getMotherTopic } from './src/mother-topics.js';
 import {
     createEmptyBankState,
@@ -21,7 +28,9 @@ const topicInput = $('#topic');
 const categoryButtons = $$('.category-btn');
 const keywordsLabel = $('#keywordsLabel');
 const structuredKeywords = $('#structuredKeywords');
+const practiceMaterialGroup = $('#practiceMaterialGroup');
 const materialSelect = $('#materialSelect');
+const practiceMaterialMode = $('#practiceMaterialMode');
 const selectedMaterialInfo = $('#selectedMaterialInfo');
 const materialCount = $('#materialCount');
 const resultSection = $('#resultSection');
@@ -51,10 +60,14 @@ const materialEditor = $('#materialEditor');
 const materialTitle = $('#materialTitle');
 const materialTags = $('#materialTags');
 const materialStory = $('#materialStory');
+const coreMaterialGrid = $('#coreMaterialGrid');
+const questionMaterialList = $('#questionMaterialList');
+const questionMaterialCount = $('#questionMaterialCount');
+const questionMaterialSummary = $('#questionMaterialSummary');
 const saveMaterialBtn = $('#saveMaterialBtn');
-const newMaterialBtn = $('#newMaterialBtn');
 const closeMaterialEditorBtn = $('#closeMaterialEditorBtn');
 const cancelMaterialBtn = $('#cancelMaterialBtn');
+const editorBindingNote = $('#editorBindingNote');
 const librarySummary = $('#librarySummary');
 
 const MATERIAL_STORAGE_KEY = 'ielts-personal-materials-v2';
@@ -70,7 +83,9 @@ let keywordsByCategory = {};
 let materials = [];
 let selectedMaterialId = '';
 let editingMaterialId = '';
+let editingMaterialBinding = null;
 let latestAnswer = '';
+let practiceQuestionId = '';
 let timerSeconds = 120;
 let timerId = null;
 let mediaRecorder = null;
@@ -97,6 +112,10 @@ function formatTime(seconds) {
     return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+function createMaterialId() {
+    return window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 function persistMaterials() {
     localStorage.setItem(MATERIAL_STORAGE_KEY, JSON.stringify(materials));
 }
@@ -114,6 +133,59 @@ function selectedMaterial() {
     return materials.find((material) => material.id === selectedMaterialId) || null;
 }
 
+function currentPracticeQuestion() {
+    if (!practiceQuestionId) {
+        return null;
+    }
+
+    return currentBankView().questions.find((question) => question.id === practiceQuestionId) || null;
+}
+
+function currentPracticeMaterialResolution() {
+    const question = currentPracticeQuestion();
+    return question ? resolveMaterialForQuestion(materials, question) : null;
+}
+
+function activePracticeMaterial() {
+    return currentPracticeMaterialResolution()?.material || selectedMaterial();
+}
+
+function bindingLabel(binding) {
+    if (!binding) {
+        return '自由练习 / 历史素材';
+    }
+
+    if (binding.type === 'mother-core') {
+        return `母题核心素材 · ${getMotherTopic(binding.motherId)?.label || '未命名母题'}`;
+    }
+
+    const question = getBaseQuestion(binding.questionId) || currentBankView().questions.find((item) => item.id === binding.questionId);
+    return `题目专属素材 · ${question?.prompt || '原题已不在当前题库中'}`;
+}
+
+function materialBinding(material) {
+    if (material?.type === 'mother-core' && material?.motherId) {
+        return {
+            type: 'mother-core',
+            motherId: material.motherId
+        };
+    }
+
+    if (material?.type === 'question-specific' && material?.questionId) {
+        return {
+            type: 'question-specific',
+            questionId: material.questionId
+        };
+    }
+
+    return null;
+}
+
+function applyPracticeMaterialSelection(materialId) {
+    practiceQuestionId = '';
+    selectedMaterialId = materialId || '';
+}
+
 function renderMaterialSelect() {
     const current = selectedMaterial();
     materialSelect.innerHTML = '';
@@ -128,31 +200,33 @@ function renderMaterialSelect() {
         materialSelect.appendChild(option);
     });
     materialSelect.value = current?.id || '';
-    selectedMaterialInfo.textContent = current
-        ? `正在使用「${current.title}」${current.tags?.length ? ` · ${current.tags.join(' · ')}` : ''}`
-        : materials.length ? '从素材库选择故事，答案会优先使用真实细节。' : '还没有素材？去“我的素材库”保存第一段真实经历。';
     materialCount.textContent = materials.length;
 }
 
 function renderMaterialList() {
     const query = materialSearch.value.trim().toLocaleLowerCase();
     const filtered = materials.filter((material) => [material.title, material.story, ...(material.tags || [])].join(' ').toLocaleLowerCase().includes(query));
+    const currentQuestion = currentPracticeQuestion();
+    const activeMaterialId = activePracticeMaterial()?.id || '';
     materialList.innerHTML = '';
-    librarySummary.textContent = `${materials.length} 条真实素材${query ? ` · 找到 ${filtered.length} 条` : ''}`;
+    librarySummary.textContent = `${materials.length} 条素材记录${query ? ` · 找到 ${filtered.length} 条` : ''}`;
 
     if (!filtered.length) {
         const empty = document.createElement('p');
         empty.className = 'material-empty';
-        empty.textContent = materials.length ? '没有找到匹配的素材。' : '从一个你亲身经历过的故事开始。它可以在很多题目中反复复用。';
+        empty.textContent = materials.length ? '没有找到匹配的素材。' : '先给 8 个母题或当前未分类题绑定第一条真实故事。';
         materialList.appendChild(empty);
         return;
     }
 
     filtered.forEach((material) => {
         const card = document.createElement('article');
-        card.className = `material-card${material.id === selectedMaterialId ? ' active' : ''}`;
+        card.className = `material-card${material.id === activeMaterialId ? ' active' : ''}`;
         const title = document.createElement('h3');
         title.textContent = material.title;
+        const binding = document.createElement('p');
+        binding.className = 'material-binding-note';
+        binding.textContent = bindingLabel(materialBinding(material));
         const story = document.createElement('p');
         story.className = 'material-story-preview';
         story.textContent = material.story;
@@ -162,49 +236,196 @@ function renderMaterialList() {
         const actions = document.createElement('div');
         actions.className = 'material-card-actions';
         const use = document.createElement('button');
-        use.type = 'button'; use.className = 'material-use-btn'; use.textContent = material.id === selectedMaterialId ? '正在用于练习' : '用这条练习';
-        use.addEventListener('click', () => { selectedMaterialId = material.id; renderMaterials(); switchView('practiceView'); });
+        use.type = 'button';
+        use.className = 'material-use-btn';
+        use.textContent = !currentQuestion && material.id === selectedMaterialId ? '正在用于练习' : '用这条练习';
+        use.addEventListener('click', () => {
+            applyPracticeMaterialSelection(material.id);
+            renderMaterials();
+            switchView('practiceView');
+        });
         const edit = document.createElement('button');
-        edit.type = 'button'; edit.textContent = '编辑';
-        edit.addEventListener('click', () => openEditor(material));
+        edit.type = 'button';
+        edit.textContent = '编辑';
+        edit.addEventListener('click', () => openEditor(material, materialBinding(material)));
         const remove = document.createElement('button');
         remove.type = 'button'; remove.className = 'material-delete-btn'; remove.textContent = '删除';
         remove.addEventListener('click', () => {
             if (!window.confirm(`确定删除「${material.title}」吗？`)) return;
             materials = materials.filter((item) => item.id !== material.id);
             if (selectedMaterialId === material.id) selectedMaterialId = '';
-            persistMaterials(); renderMaterials();
+            persistMaterials();
+            renderMaterials();
         });
         actions.append(use, edit, remove);
-        card.append(title, story, tags, actions);
+        card.append(title, binding, story, tags, actions);
         materialList.appendChild(card);
+    });
+}
+
+function renderPracticeMaterialControls() {
+    const question = currentPracticeQuestion();
+    const resolution = currentPracticeMaterialResolution();
+
+    if (question) {
+        practiceMaterialGroup.classList.add('hidden');
+        practiceMaterialMode.classList.remove('hidden');
+        practiceMaterialMode.textContent = resolution
+            ? `当前题目会自动使用「${resolution.material.title}」${resolution.bindingType === 'mother-core' ? '这条母题核心素材' : '这条专属素材'}。`
+            : question.motherId
+                ? `当前题目已归入「${getMotherTopic(question.motherId)?.label || '对应母题'}」，但你还没为它准备核心素材。`
+                : '这道未分类题还没有专属素材；先按题目本身练也可以。';
+        return;
+    }
+
+    practiceMaterialGroup.classList.remove('hidden');
+    practiceMaterialMode.classList.add('hidden');
+
+    const current = selectedMaterial();
+    selectedMaterialInfo.textContent = current
+        ? `正在使用「${current.title}」${current.tags?.length ? ` · ${current.tags.join(' · ')}` : ''}`
+        : materials.length ? '从素材库选择故事，答案会优先使用真实细节。' : '还没有素材？去“我的素材库”保存第一段真实经历。';
+}
+
+function renderCoreMaterialGrid() {
+    coreMaterialGrid.innerHTML = '';
+
+    MOTHER_TOPICS.forEach((topic) => {
+        const material = getCoreMaterial(materials, topic.id);
+        const card = document.createElement('article');
+        card.className = `core-material-card${material ? '' : ' is-empty'}`;
+
+        const chip = document.createElement('span');
+        chip.className = `material-binding-chip${material ? ' accent' : ''}`;
+        chip.textContent = material ? '已绑定核心素材' : '等待核心素材';
+
+        const title = document.createElement('h3');
+        title.className = 'material-slot-title';
+        title.textContent = topic.label;
+
+        const desc = document.createElement('p');
+        desc.className = 'slot-desc';
+        desc.textContent = topic.description;
+
+        const story = document.createElement('p');
+        story.className = 'material-slot-story';
+        story.textContent = material ? material.story : '先挑一个最能代表这个母题的真实故事，之后每季都复用它。';
+
+        const actions = document.createElement('div');
+        actions.className = 'material-slot-actions';
+        const action = document.createElement('button');
+        action.type = 'button';
+        action.className = 'slot-action-button';
+        action.textContent = material ? '编辑核心素材' : '添加核心素材';
+        action.addEventListener('click', () => openEditor(material, {
+            type: 'mother-core',
+            motherId: topic.id
+        }));
+
+        actions.append(action);
+        card.append(chip, title, desc, story, actions);
+        coreMaterialGrid.appendChild(card);
+    });
+}
+
+function renderQuestionMaterialList() {
+    const season = getActiveSeason(currentBankView());
+    const questions = getActiveSeasonQuestions(currentBankView())
+        .filter((question) => !question.motherId)
+        .sort((left, right) => left.prompt.localeCompare(right.prompt));
+    const boundCount = questions.filter((question) => getQuestionMaterial(materials, question.id)).length;
+
+    questionMaterialList.innerHTML = '';
+    questionMaterialCount.textContent = questions.length;
+    questionMaterialSummary.textContent = season
+        ? `${season.label || season.id} 当前还有 ${questions.length} 道未分类题，其中 ${boundCount} 道已经有专属素材。`
+        : '先导入一个季度，未分类题的专属素材入口才会出现。';
+
+    if (!questions.length) {
+        const empty = document.createElement('p');
+        empty.className = 'slot-empty';
+        empty.textContent = season ? '当前季度没有待处理的未分类题。' : '还没有可查看的季度。';
+        questionMaterialList.appendChild(empty);
+        return;
+    }
+
+    questions.forEach((question) => {
+        const material = getQuestionMaterial(materials, question.id);
+        const card = document.createElement('article');
+        card.className = 'question-material-card';
+
+        const chip = document.createElement('span');
+        chip.className = `material-binding-chip${material ? ' accent' : ''}`;
+        chip.textContent = material ? '已有专属素材' : '还没绑定';
+
+        const title = document.createElement('h4');
+        title.textContent = question.prompt;
+
+        const status = document.createElement('p');
+        status.className = 'question-material-status';
+        status.textContent = material
+            ? `当前专属素材：${material.title}`
+            : '这道题还没进入任何母题，所以需要单独准备一条故事。';
+
+        const actions = document.createElement('div');
+        actions.className = 'material-slot-actions';
+        const action = document.createElement('button');
+        action.type = 'button';
+        action.className = 'slot-action-button';
+        action.textContent = material ? '编辑专属素材' : '添加专属素材';
+        action.addEventListener('click', () => openEditor(material, {
+            type: 'question-specific',
+            questionId: question.id
+        }));
+
+        actions.append(action);
+        card.append(chip, title, status, actions);
+        questionMaterialList.appendChild(card);
     });
 }
 
 function renderMaterials() {
     renderMaterialSelect();
+    renderPracticeMaterialControls();
+    renderCoreMaterialGrid();
+    renderQuestionMaterialList();
     renderMaterialList();
 }
 
 function resetEditor() {
     editingMaterialId = '';
+    editingMaterialBinding = null;
     materialTitle.value = ''; materialTags.value = ''; materialStory.value = '';
     $('#editorTitle').textContent = '新建一条素材';
     saveMaterialBtn.innerHTML = '保存素材 <span>→</span>';
+    editorBindingNote.textContent = '这里既能修改旧素材，也能替换绑定在固定位置上的新素材。';
 }
 
-function openEditor(material = null) {
+function openEditor(material = null, binding = null) {
     materialEditor.classList.remove('hidden');
+    editingMaterialBinding = binding || materialBinding(material);
     if (material) {
         editingMaterialId = material.id;
         materialTitle.value = material.title;
         materialTags.value = (material.tags || []).join('，');
         materialStory.value = material.story;
-        $('#editorTitle').textContent = '编辑这条素材';
+        $('#editorTitle').textContent = editingMaterialBinding?.type === 'mother-core'
+            ? '编辑这条母题核心素材'
+            : editingMaterialBinding?.type === 'question-specific'
+                ? '编辑这条题目专属素材'
+                : '编辑这条素材';
         saveMaterialBtn.innerHTML = '保存修改 <span>→</span>';
     } else {
         resetEditor();
+        editingMaterialBinding = binding || null;
+        $('#editorTitle').textContent = editingMaterialBinding?.type === 'mother-core'
+            ? `为「${getMotherTopic(editingMaterialBinding.motherId)?.label || '这个母题'}」添加核心素材`
+            : editingMaterialBinding?.type === 'question-specific'
+                ? '为这道未分类题添加专属素材'
+                : '新建一条素材';
     }
+    editorBindingNote.textContent = bindingLabel(editingMaterialBinding)
+        + (editingMaterialBinding ? '。保存后会直接替换这个固定位置上的旧版本。' : '。旧素材仍可继续手动用于自由练习。');
     materialEditor.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -215,11 +436,36 @@ function saveMaterial() {
     const story = materialStory.value.trim();
     const tags = [...new Set(materialTags.value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean))].slice(0, 8);
     if (!title || !story) { alert('请填写素材名称和真实细节。'); return; }
-    if (editingMaterialId) {
-        materials = materials.map((material) => material.id === editingMaterialId ? { ...material, title, story, tags, updatedAt: new Date().toISOString() } : material);
+    const current = editingMaterialId ? materials.find((material) => material.id === editingMaterialId) : null;
+    const timestamp = new Date().toISOString();
+
+    if (editingMaterialBinding?.type === 'mother-core') {
+        materials = upsertCoreMaterial(materials, {
+            id: editingMaterialId || createMaterialId(),
+            motherId: editingMaterialBinding.motherId,
+            title,
+            story,
+            tags,
+            createdAt: current?.createdAt || timestamp,
+            updatedAt: timestamp
+        });
+        selectedMaterialId = getCoreMaterial(materials, editingMaterialBinding.motherId)?.id || selectedMaterialId;
+    } else if (editingMaterialBinding?.type === 'question-specific') {
+        materials = upsertQuestionMaterial(materials, {
+            id: editingMaterialId || createMaterialId(),
+            questionId: editingMaterialBinding.questionId,
+            title,
+            story,
+            tags,
+            createdAt: current?.createdAt || timestamp,
+            updatedAt: timestamp
+        });
+        selectedMaterialId = getQuestionMaterial(materials, editingMaterialBinding.questionId)?.id || selectedMaterialId;
+    } else if (editingMaterialId) {
+        materials = materials.map((material) => material.id === editingMaterialId ? { ...material, title, story, tags, updatedAt: timestamp } : material);
     } else {
-        const id = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        materials.unshift({ id, title, story, tags, createdAt: new Date().toISOString() });
+        const id = createMaterialId();
+        materials.unshift({ id, title, story, tags, createdAt: timestamp, updatedAt: timestamp });
         selectedMaterialId = id;
     }
     persistMaterials(); renderMaterials(); closeEditor();
@@ -277,7 +523,7 @@ async function generateAnswer() {
     if (!topic) { alert('请先填写一道雅思 Part 2 题目。'); topicInput.focus(); return; }
     generateBtn.disabled = true; loading.classList.remove('hidden'); latestAnswer = ''; resultText.innerHTML = ''; resultSection.classList.remove('hidden'); answerEmpty.classList.add('hidden');
     try {
-        const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: 'model-answer', topic, category: currentCategory, keywords: keywordText(), structuredKeywords: keywordsByCategory[currentCategory], personalMaterial: selectedMaterial() }) });
+        const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: 'model-answer', topic, category: currentCategory, keywords: keywordText(), structuredKeywords: keywordsByCategory[currentCategory], personalMaterial: activePracticeMaterial() }) });
         if (!response.ok) throw new Error(await getErrorMessage(response));
         await readSseStream(response, (content) => { latestAnswer += content; resultText.innerHTML = escapeHtml(latestAnswer).replace(/\n/g, '<br>'); });
         if (!latestAnswer.trim()) throw new Error('没有生成答案，请重试。');
@@ -1041,6 +1287,7 @@ function renderBank() {
         ? '本地识别会先生成保守草稿；只有在弹窗里点击“确认分类”，本季覆盖结果才会写入题库。'
         : '选择一个季度查看已确认分类；弹窗里的拖拽和下拉都只会改草稿，不会即时保存。';
     openImportModalBtn.disabled = !seasonQuestions.length;
+    renderMaterials();
 }
 
 function removeQuestion(questionId) {
@@ -1094,8 +1341,11 @@ function clearBank() {
 }
 
 function openInPractice(question) {
+    practiceQuestionId = question.id;
+    selectedMaterialId = resolveMaterialForQuestion(materials, question)?.material?.id || '';
     topicInput.value = question.prompt;
     applyCategory(questionCategory(question));
+    renderMaterials();
     switchView('practiceView');
     topicInput.focus();
 }
@@ -1464,9 +1714,16 @@ classificationDialog?.addEventListener('pointercancel', handleClassificationPoin
 
 categoryButtons.forEach((button) => button.addEventListener('click', () => applyCategory(button.dataset.category)));
 $$('.nav-link').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.viewTarget)));
-materialSelect.addEventListener('change', () => { selectedMaterialId = materialSelect.value; renderMaterials(); });
+materialSelect.addEventListener('change', () => { applyPracticeMaterialSelection(materialSelect.value); renderMaterials(); });
 materialSearch.addEventListener('input', renderMaterialList);
-newMaterialBtn.addEventListener('click', () => openEditor()); closeMaterialEditorBtn.addEventListener('click', closeEditor); cancelMaterialBtn.addEventListener('click', closeEditor); saveMaterialBtn.addEventListener('click', saveMaterial);
+topicInput.addEventListener('input', () => {
+    const question = currentPracticeQuestion();
+    if (question && topicInput.value !== question.prompt) {
+        practiceQuestionId = '';
+        renderMaterials();
+    }
+});
+closeMaterialEditorBtn.addEventListener('click', closeEditor); cancelMaterialBtn.addEventListener('click', closeEditor); saveMaterialBtn.addEventListener('click', saveMaterial);
 generateBtn.addEventListener('click', generateAnswer);
 recordBtn.addEventListener('click', () => mediaRecorder?.state === 'recording' ? stopRecording() : startRecording());
 transcriptEditor.addEventListener('input', invalidateConfirmedTranscript);
@@ -1481,6 +1738,6 @@ voiceOptions.forEach((option) => option.addEventListener('click', () => {
 if ('speechSynthesis' in window) speechSynthesis.addEventListener('voiceschanged', updateReadingControls);
 copyBtn.addEventListener('click', async () => { if (!latestAnswer) return; try { await navigator.clipboard.writeText(latestAnswer); copyBtn.textContent = '已复制'; setTimeout(() => { copyBtn.textContent = '复制答案'; }, 1300); } catch { alert('复制失败，请手动选择答案。'); } });
 
-loadMaterials(); applyCategory(currentCategory); renderMaterials(); resetTimer(); updateReadingControls();
+loadMaterials(); applyCategory(currentCategory); resetTimer(); updateReadingControls();
 makeDroppable(poolCell, '');
 loadBank(); renderBank(); updateRecommendButton();
