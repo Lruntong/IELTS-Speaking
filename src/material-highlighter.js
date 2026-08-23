@@ -7,6 +7,13 @@ const STOPWORDS = new Set([
 ]);
 
 const MIN_MATCH_TOKENS = 5;
+const MIN_INFORMATIVE_TOKENS = 2;
+const COMMON_BOILERPLATE = [
+  ['like', 'to', 'talk', 'about'],
+  ['going', 'to', 'talk', 'about'],
+  ['about', 'this', 'topic'],
+  ['topic', 'i', 'want', 'to', 'describe'],
+];
 
 function tokenizeEnglish(text) {
   const tokens = [];
@@ -25,8 +32,16 @@ function tokenizeEnglish(text) {
   return tokens;
 }
 
-function hasMeaningfulWord(tokens) {
-  return tokens.some((token) => !STOPWORDS.has(token.value));
+function hasMeaningfulContent(tokens) {
+  const informativeCount = new Set(
+    tokens.filter((token) => !STOPWORDS.has(token.value)).map((token) => token.value)
+  ).size;
+  const values = tokens.map((token) => token.value);
+  const isShortBoilerplate = tokens.length <= 10 && COMMON_BOILERPLATE.some((phrase) =>
+    values.some((_, start) => phrase.every((value, index) => values[start + index] === value))
+  );
+
+  return informativeCount >= MIN_INFORMATIVE_TOKENS && !isShortBoilerplate;
 }
 
 function overlaps(a, b) {
@@ -73,7 +88,7 @@ export function findReusedRanges(materialText, answerText) {
       }
 
       const answerSlice = answerTokens.slice(answerIndex, answerIndex + length);
-      if (length >= MIN_MATCH_TOKENS && hasMeaningfulWord(answerSlice)) {
+      if (length >= MIN_MATCH_TOKENS && hasMeaningfulContent(answerSlice)) {
         candidates.push({
           start: answerSlice[0].start,
           end: answerSlice.at(-1).end,

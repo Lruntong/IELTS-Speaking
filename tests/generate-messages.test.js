@@ -30,8 +30,8 @@ test('speaking-review prompt keeps four Chinese headings and treats source mater
   const messages = buildGenerationMessages({
     task: 'speaking-review',
     topic: 'Describe an outdoor activity.',
-    transcript: 'I went fishing with my grandfather beside a quiet lake.',
-    referenceAnswer: 'I went fishing with my grandfather beside a quiet lake.',
+    transcript: Array(45).fill('detail').join(' '),
+    referenceAnswer: 'GENERATED_REFERENCE_MUST_NOT_BE_COMPARED',
     questionMotherId: 'M3',
     sourceMaterial: '我和外公在湖边钓鱼，那天早上阳光很好。',
   });
@@ -42,5 +42,25 @@ test('speaking-review prompt keeps four Chinese headings and treats source mater
   assert.match(prompt, /Source material used to generate the answer/);
   assert.match(prompt, /M3/);
   assert.match(prompt, /isolated keywords/i);
+  assert.match(prompt, /compare[^.]*only[^.]*original source material/i);
   assert.match(prompt, /Do not output a memorization percentage/i);
+  assert.doesNotMatch(prompt, /GENERATED_REFERENCE_MUST_NOT_BE_COMPARED/);
+});
+
+test('speaking-review skips template judgment without source material or for a short transcript', () => {
+  const withoutMaterial = buildGenerationMessages({
+    task: 'speaking-review',
+    topic: 'Describe a place.',
+    transcript: Array(45).fill('original').join(' '),
+    sourceMaterial: '',
+  }).map((message) => message.content).join('\n');
+  const shortTranscript = buildGenerationMessages({
+    task: 'speaking-review',
+    topic: 'Describe a place.',
+    transcript: 'I visited the lake yesterday.',
+    sourceMaterial: 'I visited a quiet lake with my family and stayed there all morning.',
+  }).map((message) => message.content).join('\n');
+
+  assert.match(withoutMaterial, /skip[^.]*template[^.]*source material/i);
+  assert.match(shortTranscript, /skip[^.]*template[^.]*too short/i);
 });

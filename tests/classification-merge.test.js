@@ -51,3 +51,22 @@ test('confirmed null override beats stale imported draft suggestions', () => {
 
   assert.equal(result, null);
 });
+
+test('inherited null blocks remote and local suggestion generation', () => {
+  let localCalls = 0;
+  const result = mergeClassificationResults(
+    [{ id: 'inherited-null' }, { id: 'new-question' }],
+    { 'inherited-null': null },
+    [
+      { id: 'inherited-null', motherId: 'M1' },
+      { id: 'new-question', motherId: 'M2' },
+    ],
+    () => {
+      localCalls += 1;
+      return 'M8';
+    }
+  );
+
+  assert.deepEqual(result, { 'inherited-null': null, 'new-question': 'M2' });
+  assert.equal(localCalls, 0);
+});

@@ -71,6 +71,10 @@ function formatCues(cues) {
         : '';
 }
 
+function countEnglishWords(value) {
+    return cleanText(value, 6000).match(/[A-Za-z]+(?:'[A-Za-z]+)?/g)?.length || 0;
+}
+
 export function buildGenerationMessages({
     task,
     topic,
@@ -104,14 +108,20 @@ export function buildGenerationMessages({
     }
 
     if (task === 'speaking-review') {
+        const transcriptWordCount = countEnglishWords(transcript);
+        const templateInstruction = !sourceMaterialText
+            ? 'Skip the template-closeness judgment entirely because no original source material is available; do not mention memorization or template reuse.'
+            : transcriptWordCount < 40
+                ? 'Skip the template-closeness judgment entirely because the learner transcript is too short; do not mention memorization or template reuse.'
+                : 'For template closeness, compare the transcript only against the original source material. Reasonable reuse of facts and isolated keywords is normal; only gently mention memorization when continuous long passages, sentence order, or broad wording are unusually close. Never compare against a generated reference answer.';
         return [
             {
                 role: 'system',
-                content: `You are a supportive IELTS Speaking coach for a learner around Band 6. Review the learner's transcribed Part 2 response. The transcript may contain speech-recognition errors, so do not over-correct isolated words. Give concise, practical feedback in Simplified Chinese. Do NOT give a precise IELTS band score. Output plain text only, using exactly these sections: 做得好的：, 最值得改的一点：, 更自然的说法：, 下次挑战：. Give 1-2 bullets per section. Focus on content coverage, fluency, clarity, grammar, and easy-to-say alternatives. Reuse of facts, personal details, and isolated keywords from the source material is normal. Only gently mention memorization when long wording and sequence are unusually close to the generated answer. Do not output a memorization percentage.`
+                content: `You are a supportive IELTS Speaking coach for a learner around Band 6. Review the learner's transcribed Part 2 response. The transcript may contain speech-recognition errors, so do not over-correct isolated words. Give concise, practical feedback in Simplified Chinese. Do NOT give a precise IELTS band score. Output plain text only, using exactly these sections: 做得好的：, 最值得改的一点：, 更自然的说法：, 下次挑战：. Give 1-2 bullets per section. Focus on content coverage, fluency, clarity, grammar, and easy-to-say alternatives. Reuse of facts, personal details, and isolated keywords from the source material is normal. ${templateInstruction} Do not output a memorization percentage.`
             },
             {
                 role: 'user',
-                content: `Question: ${topic || 'Not provided'}\nMother topic id: ${cleanQuestionMotherId || 'Not provided'}\nLearner transcript:\n${transcript}\n\nReference answer for context only (do not ask learner to memorize it):\n${referenceAnswer || 'Not provided'}\n\nSource material used to generate the answer (facts and isolated keywords are allowed context):\n${sourceMaterialText || 'Not provided'}`
+                content: `Question: ${topic || 'Not provided'}\nMother topic id: ${cleanQuestionMotherId || 'Not provided'}\nLearner transcript:\n${transcript}\n\nSource material used to generate the answer (facts and isolated keywords are allowed context):\n${sourceMaterialText || 'Not provided'}`
             }
         ];
     }
@@ -239,14 +249,16 @@ ${questionList}`
     const data = await response.json();
     const parsed = parseJsonContent(data.choices?.[0]?.message?.content || '');
     if (!parsed || !Array.isArray(parsed.classifications)) {
-        throw new Error('Invalid classification payload');
+        return { classifications: [], malformed: true };
     }
 
+    const classifications = validateClassificationItems(
+        parsed.classifications,
+        new Set(batch.map((question) => question.id))
+    );
     return {
-        classifications: validateClassificationItems(
-            parsed.classifications,
-            new Set(batch.map((question) => question.id))
-        )
+        classifications,
+        malformed: false,
     };
 }
 
@@ -265,15 +277,47 @@ async function handleMotherClassify(res, apiKey, questions) {
 
     try {
         const classifications = [];
+        let partialFailure = false;
         for (const batch of chunkItems(validQuestions, 20)) {
-            const result = await classifyBatch(apiKey, batch);
+            let result;
+            try {
+                result = await classifyBatch(apiKey, batch);
+            } catch (error) {
+                if (!classifications.length) throw error;
+                console.error('Mother classify later batch failed:', error);
+                partialFailure = true;
+                break;
+            }
             if (result.errorStatus) {
-                return res.status(result.errorStatus).json({ error: '模型服务暂时不可用，请稍后重试。' });
+                if (!classifications.length) {
+                    return res.status(result.errorStatus).json({ error: '模型服务暂时不可用，请稍后重试。' });
+                }
+                partialFailure = true;
+                break;
             }
             classifications.push(...result.classifications);
+            partialFailure ||= result.malformed;
         }
 
-        return res.json({ classifications, provider: 'deepseek' });
+        const resolvedIds = new Set(classifications.map((item) => item.id));
+        const unresolvedIds = validQuestions
+            .map((question) => question.id)
+            .filter((id) => !resolvedIds.has(id));
+        const remoteCount = resolvedIds.size;
+        const incomplete = unresolvedIds.length > 0;
+        const provider = remoteCount === 0
+            ? 'local'
+            : incomplete ? 'mixed' : 'deepseek';
+
+        return res.json({
+            classifications,
+            provider,
+            incomplete,
+            requestedCount: validQuestions.length,
+            remoteCount,
+            unresolvedIds,
+            ...((partialFailure || incomplete) ? { code: 'classification_partial' } : {}),
+        });
     } catch (error) {
         console.error('Mother classify request failed:', error);
         return res.status(500).json({ error: '分类服务出现异常，请稍后重试。' });

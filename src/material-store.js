@@ -21,6 +21,23 @@ function findExistingBinding(materials, predicate) {
   return normalizeList(materials).find(predicate) || null;
 }
 
+export function parseStoredMaterials(rawValue, reportError = console.error) {
+  if (rawValue == null || String(rawValue).trim() === '') {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue);
+    if (!Array.isArray(parsed)) {
+      throw new TypeError('Material storage must contain an array.');
+    }
+    return parsed.filter((material) => material?.id && material?.title && material?.story);
+  } catch (error) {
+    reportError('Recoverable material storage error; using empty state.', error);
+    return [];
+  }
+}
+
 function upsertBoundMaterial(materials, input, binding) {
   const list = normalizeList(materials);
   const existing = findExistingBinding(
@@ -41,6 +58,12 @@ function upsertBoundMaterial(materials, input, binding) {
     createdAt,
     updatedAt: normalizeTimestamp(input?.updatedAt),
   };
+
+  if (binding.type === 'question-specific') {
+    nextMaterial.seasonId = String(
+      input?.seasonId ?? input?.season ?? existing?.seasonId ?? existing?.season ?? ''
+    ).trim();
+  }
 
   return [
     nextMaterial,

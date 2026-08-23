@@ -19,6 +19,7 @@ test('exiting bank-question context clears saved-answer practice state while pre
     reviewText: 'old review',
     reviewVisible: true,
     savedAnswerStatus: '已保存答案',
+    sessionToken: 7,
   });
 
   assert.equal(reset.topic, 'Describe a different topic I just typed');
@@ -35,4 +36,5 @@ test('exiting bank-question context clears saved-answer practice state while pre
   assert.equal(reset.reviewText, '');
   assert.equal(reset.reviewVisible, false);
   assert.equal(reset.savedAnswerStatus, '');
+  assert.equal(reset.sessionToken, 8);
 });

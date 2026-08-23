@@ -91,9 +91,8 @@ export function mergeClassificationResults(
 
   return Object.fromEntries(
     knownQuestions.map((question) => {
-      const inheritedMotherId = normalizeMotherId(inheritedMap[question.id]);
-      if (inheritedMotherId) {
-        return [question.id, inheritedMotherId];
+      if (hasOwn(inheritedMap, question.id)) {
+        return [question.id, normalizeMotherId(inheritedMap[question.id])];
       }
 
       const remoteMotherId = remoteMap.get(question.id);

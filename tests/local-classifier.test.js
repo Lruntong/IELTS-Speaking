@@ -22,3 +22,23 @@ for (const [prompt, expected] of cases) {
 test('ambiguous prompt stays unclassified', () => {
   assert.equal(classifyQuestionLocally({ prompt: 'Describe something interesting.' }), null);
 });
+
+test('cue points contribute specific evidence to an otherwise generic prompt', () => {
+  assert.equal(
+    classifyQuestionLocally({
+      prompt: 'Describe a person you know.',
+      cues: ['who your elderly mentor is', 'what this older person taught you'],
+    }),
+    'M1'
+  );
+});
+
+test('generic person, place, and experience prompts remain unclassified', () => {
+  const prompts = [
+    'Describe a person you remember.',
+    'Describe a place you enjoy visiting.',
+    'Describe an experience that was important to you.',
+  ];
+
+  prompts.forEach((prompt) => assert.equal(classifyQuestionLocally({ prompt }), null));
+});

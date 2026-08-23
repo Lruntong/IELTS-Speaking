@@ -15,5 +15,6 @@ export function resetBankQuestionPracticeContext(state = {}) {
     reviewText: '',
     reviewVisible: false,
     savedAnswerStatus: '',
+    sessionToken: (Number.isFinite(Number(state.sessionToken)) ? Number(state.sessionToken) : 0) + 1,
   };
 }

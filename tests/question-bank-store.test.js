@@ -2,11 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  applyClassificationDraft,
+  clearImportedBankData,
   createEmptyBankState,
   importSeasonQuestionsWithOfficial,
   importSeasonQuestions,
   mergeOfficialQuestions,
   migrateLegacyBank,
+  parseStoredBank,
   serializeBankState,
 } from '../src/question-bank-store.js';
 import { normalizePrompt } from '../src/mother-topics.js';
@@ -135,6 +138,26 @@ test('importSeasonQuestions applies the selected season when imported rows conta
   assert.equal(imported.activeSeasonId, '2099-08');
 });
 
+test('importSeasonQuestions makes the explicit target season authoritative over item season fields', () => {
+  const imported = importSeasonQuestions(
+    createEmptyBankState(),
+    [
+      {
+        prompt: 'Describe a library you enjoy visiting.',
+        season: '1999-01',
+        seasonId: '2000-02',
+      },
+    ],
+    '2099-08',
+    () => 'q-conflicting-season'
+  );
+
+  assert.equal(imported.userQuestions[0].seasonId, '2099-08');
+  assert.equal(imported.activeSeasonId, '2099-08');
+  assert.equal(imported.seasons.some((season) => season.id === '2099-08'), true);
+  assert.equal(imported.seasons.some((season) => season.id === '1999-01'), false);
+});
+
 test('importSeasonQuestions skips same-season official duplicates from merged state', () => {
   const mergedState = mergeOfficialQuestions(createEmptyBankState(), [
     {
@@ -186,6 +209,137 @@ test('importSeasonQuestions inherits motherId across seasons from official merge
   assert.equal(imported.userQuestions.length, 1);
   assert.equal(imported.userQuestions[0].id, 'generated-official-cross-season');
   assert.equal(imported.userQuestions[0].motherId, 'M5');
+});
+
+test('importSeasonQuestions records an inherited null as an own durable override', () => {
+  const baseState = {
+    ...createEmptyBankState(),
+    userQuestions: [
+      {
+        id: 'history-null',
+        prompt: 'Describe a person you remember.',
+        cues: [],
+        tags: [],
+        seasonId: '2026-05-08',
+        motherId: null,
+        source: 'user',
+        normalizedPrompt: 'describe a person you remember',
+        createdAt: '2026-05-08T00:00:00.000Z',
+      },
+    ],
+  };
+
+  const imported = importSeasonQuestions(
+    baseState,
+    [{ prompt: 'Describe a person you remember!' }],
+    '2026-09-12',
+    () => 'inherited-null'
+  );
+
+  assert.equal(imported.userQuestions.at(-1).motherId, null);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(imported.classificationOverrides, 'inherited-null'),
+    true
+  );
+  assert.equal(imported.classificationOverrides['inherited-null'], null);
+});
+
+test('inherited null uses the actual imported record id when JSON supplies one', () => {
+  const baseState = {
+    ...createEmptyBankState(),
+    userQuestions: [
+      {
+        id: 'history-null-json',
+        prompt: 'Describe a generic experience.',
+        seasonId: '2026-05-08',
+        motherId: null,
+        source: 'user',
+      },
+    ],
+  };
+
+  const imported = importSeasonQuestions(
+    baseState,
+    [{ id: 'json-record-id', prompt: 'Describe a generic experience!' }],
+    '2026-09-12',
+    () => 'unused-generated-id'
+  );
+
+  assert.equal(imported.userQuestions.at(-1).id, 'json-record-id');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(imported.classificationOverrides, 'json-record-id'),
+    true
+  );
+  assert.equal('unused-generated-id' in imported.classificationOverrides, false);
+});
+
+test('applyClassificationDraft persists confirmed null and defers draft deletion until commit', () => {
+  const state = {
+    ...createEmptyBankState(),
+    userQuestions: [
+      {
+        id: 'keep-null',
+        prompt: 'Describe a person.',
+        seasonId: '2026-09-12',
+        motherId: null,
+        source: 'user',
+      },
+      {
+        id: 'remove-on-confirm',
+        prompt: 'Describe an object.',
+        seasonId: '2026-09-12',
+        motherId: 'M3',
+        source: 'user',
+      },
+    ],
+    classificationOverrides: { 'remove-on-confirm': 'M3' },
+  };
+
+  const committed = applyClassificationDraft(
+    state,
+    state.userQuestions,
+    { 'keep-null': null, 'remove-on-confirm': 'M4' },
+    new Set(['remove-on-confirm'])
+  );
+
+  assert.equal(state.userQuestions.length, 2);
+  assert.equal(committed.userQuestions.length, 1);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(committed.classificationOverrides, 'keep-null'),
+    true
+  );
+  assert.equal(committed.classificationOverrides['keep-null'], null);
+  assert.equal('remove-on-confirm' in committed.classificationOverrides, false);
+});
+
+test('clearImportedBankData preserves saved answers and compatibility data', () => {
+  const state = {
+    ...createEmptyBankState(),
+    seasons: [{ id: '2026-09-12' }],
+    activeSeasonId: '2026-09-12',
+    userQuestions: [{ id: 'user-1', prompt: 'Question' }],
+    classificationOverrides: { official1: null },
+    savedAnswers: { official1: { questionId: 'official1', content: 'keep me' } },
+    legacy: { assignments: { old: 'elder-person' } },
+    compatibilityField: { keep: true },
+  };
+
+  const cleared = clearImportedBankData(state);
+
+  assert.deepEqual(cleared.userQuestions, []);
+  assert.deepEqual(cleared.classificationOverrides, {});
+  assert.deepEqual(cleared.savedAnswers, state.savedAnswers);
+  assert.deepEqual(cleared.legacy, state.legacy);
+  assert.deepEqual(cleared.compatibilityField, { keep: true });
+});
+
+test('parseStoredBank logs corrupt storage before returning recoverable empty state', () => {
+  const errors = [];
+  const parsed = parseStoredBank('{broken', (...args) => errors.push(args));
+
+  assert.deepEqual(parsed, createEmptyBankState());
+  assert.equal(errors.length, 1);
+  assert.match(errors[0][0], /bank/i);
 });
 
 test('importSeasonQuestionsWithOfficial merges official questions into import-time duplicate and inheritance checks', () => {

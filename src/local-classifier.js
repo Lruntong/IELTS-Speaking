@@ -5,6 +5,14 @@ const TOKEN_SCORE = 2;
 const TIE_BREAKER_WEIGHT = 0.2;
 const MIN_SIMILARITY_LENGTH = 4;
 const TIE_EPSILON = 1e-9;
+const MIN_MEANINGFUL_SCORE = 3;
+const MIN_WINNER_MARGIN = 2;
+const GENERIC_TOKENS = new Set([
+  'a', 'an', 'about', 'describe', 'experience', 'how', 'important', 'it',
+  'know', 'one', 'person', 'place', 'remember', 'someone', 'something',
+  'tell', 'that', 'the', 'thing', 'this', 'time', 'to', 'topic', 'visit',
+  'visiting', 'what', 'when', 'where', 'who', 'why', 'you', 'your',
+]);
 
 const EXTRA_CUES = Object.freeze({
   M1: ['elderly person', 'older person', 'old person', 'grandparent', 'grandfather', 'grandmother'],
@@ -25,6 +33,15 @@ const TOPIC_CUES = Object.freeze(
     ])
   )
 );
+
+const TOKEN_TOPIC_COUNTS = (() => {
+  const counts = new Map();
+  Object.values(TOPIC_CUES).forEach((cues) => {
+    const topicTokens = new Set(cues.flatMap((cue) => cue.split(' ').filter(Boolean)));
+    topicTokens.forEach((token) => counts.set(token, (counts.get(token) || 0) + 1));
+  });
+  return counts;
+})();
 
 function buildCueSet(topicId, cues) {
   const topic = getMotherTopic(topicId);
@@ -87,15 +104,21 @@ function scoreTopic(promptText, promptTokens, topicId) {
   const cues = TOPIC_CUES[topicId] || [];
   let baseScore = 0;
   let bestSimilarity = 0;
+  const matchedPhrases = new Set();
+  const matchedTokens = new Set();
 
   cues.forEach((cue) => {
     const cueTokens = cue.split(' ').filter(Boolean);
-    if (cueTokens.length > 1 && promptText.includes(cue)) {
+    if (cueTokens.length > 1 && promptText.includes(cue) && !matchedPhrases.has(cue)) {
+      matchedPhrases.add(cue);
       baseScore += PHRASE_SCORE + cueTokens.length - 1;
     }
 
     cueTokens.forEach((cueToken) => {
-      if (promptTokens.includes(cueToken)) {
+      const isSpecificToken = !GENERIC_TOKENS.has(cueToken)
+        && TOKEN_TOPIC_COUNTS.get(cueToken) === 1;
+      if (isSpecificToken && promptTokens.includes(cueToken) && !matchedTokens.has(cueToken)) {
+        matchedTokens.add(cueToken);
         baseScore += TOKEN_SCORE;
       }
 
@@ -121,7 +144,10 @@ function scoreTopic(promptText, promptTokens, topicId) {
 }
 
 export function classifyQuestionLocally(question) {
-  const promptText = normalizePrompt(question?.prompt ?? '');
+  const promptText = normalizePrompt([
+    question?.prompt ?? '',
+    ...(Array.isArray(question?.cues) ? question.cues : []),
+  ].join(' '));
   if (!promptText) {
     return null;
   }
@@ -134,11 +160,15 @@ export function classifyQuestionLocally(question) {
 
   const best = ranked[0];
   const second = ranked[1];
-  if (!best || best.baseScore === 0) {
+  if (!best || best.baseScore < MIN_MEANINGFUL_SCORE) {
     return null;
   }
 
   if (second && Math.abs(best.totalScore - second.totalScore) <= TIE_EPSILON) {
+    return null;
+  }
+
+  if (second && best.totalScore - second.totalScore < MIN_WINNER_MARGIN) {
     return null;
   }
 

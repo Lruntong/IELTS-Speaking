@@ -157,8 +157,9 @@ function sanitizeQuestions(questions, defaults = {}) {
 
 function cloneState(state) {
   const base = state && typeof state === 'object' ? state : {};
-
-  return {
+  const cloned = cloneValue(base);
+  const nextState = {
+    ...cloned,
     schemaVersion: DEFAULT_SCHEMA_VERSION,
     seasons: Array.isArray(base.seasons) ? base.seasons.map((season) => cloneValue(season)) : [],
     activeSeasonId: base.activeSeasonId ?? null,
@@ -170,8 +171,13 @@ function cloneState(state) {
     savedAnswers:
       base.savedAnswers && typeof base.savedAnswers === 'object' ? cloneValue(base.savedAnswers) : {},
     ...(Array.isArray(base.questions) ? { questions: sanitizeQuestions(base.questions) } : {}),
-    ...(hasOwn(base, 'legacy') ? { legacy: cloneValue(base.legacy) } : {}),
   };
+
+  if (!Array.isArray(base.questions)) {
+    delete nextState.questions;
+  }
+
+  return nextState;
 }
 
 function getMergedQuestions(state) {
@@ -191,6 +197,80 @@ export function createEmptyBankState() {
     classificationOverrides: {},
     savedAnswers: {},
   };
+}
+
+export function parseStoredBank(rawValue, reportError = console.error) {
+  if (rawValue == null || String(rawValue).trim() === '') {
+    return createEmptyBankState();
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new TypeError('Question bank storage must contain an object.');
+    }
+
+    if (parsed.schemaVersion === DEFAULT_SCHEMA_VERSION || Array.isArray(parsed.userQuestions)) {
+      const serialized = serializeBankState(parsed);
+      delete serialized.questions;
+      return {
+        ...createEmptyBankState(),
+        ...serialized,
+      };
+    }
+
+    return migrateLegacyBank(parsed);
+  } catch (error) {
+    reportError('Recoverable question bank storage error; using empty state.', error);
+    return createEmptyBankState();
+  }
+}
+
+export function applyClassificationDraft(state, questions, draft, deletedQuestionIds = new Set()) {
+  const nextState = cloneState(state);
+  const deletedIds = deletedQuestionIds instanceof Set
+    ? deletedQuestionIds
+    : new Set(Array.isArray(deletedQuestionIds) ? deletedQuestionIds : []);
+  const assignments = draft && typeof draft === 'object' && !Array.isArray(draft) ? draft : {};
+  const nextOverrides = { ...nextState.classificationOverrides };
+
+  (Array.isArray(questions) ? questions : []).forEach((question) => {
+    const questionId = String(question?.id ?? '').trim();
+    if (!questionId) {
+      return;
+    }
+
+    if (deletedIds.has(questionId)) {
+      delete nextOverrides[questionId];
+      return;
+    }
+
+    if (hasOwn(assignments, questionId)) {
+      nextOverrides[questionId] = assignments[questionId] || null;
+    }
+  });
+
+  return {
+    ...nextState,
+    userQuestions: nextState.userQuestions.filter((question) => !deletedIds.has(question.id)),
+    classificationOverrides: nextOverrides,
+    ...(Array.isArray(nextState.questions)
+      ? { questions: nextState.questions.filter((question) => !deletedIds.has(question.id)) }
+      : {}),
+  };
+}
+
+export function clearImportedBankData(state) {
+  const nextState = cloneState(state);
+  const cleared = {
+    ...nextState,
+    seasons: [],
+    activeSeasonId: null,
+    userQuestions: [],
+    classificationOverrides: {},
+  };
+  delete cleared.questions;
+  return cleared;
 }
 
 export function migrateLegacyBank(raw) {
@@ -289,6 +369,7 @@ export function importSeasonQuestions(state, items, seasonId, createId = default
   const targetSeasonId = String(seasonId ?? '').trim();
   const existingQuestions = getMergedQuestions(nextState);
   const importedQuestions = [];
+  const nextOverrides = { ...nextState.classificationOverrides };
   const normalizedBySeason = new Set(
     existingQuestions.map((question) => `${question.seasonId}::${question.normalizedPrompt}`)
   );
@@ -310,16 +391,20 @@ export function importSeasonQuestions(state, items, seasonId, createId = default
     const matchingHistory = sortQuestionsByCreatedAt(existingQuestions).filter(
       (question) => question.normalizedPrompt === normalized
     );
-    const inheritedMotherId = matchingHistory.at(-1)?.motherId ?? null;
+    const hasHistoricalMatch = matchingHistory.length > 0;
+    const inheritedMotherId = hasHistoricalMatch ? matchingHistory.at(-1).motherId ?? null : null;
+    const questionId = createId();
+    const importedQuestion = sanitizeQuestion({ ...item, seasonId: targetSeasonId }, {
+      id: questionId,
+      seasonId: targetSeasonId,
+      motherId: inheritedMotherId,
+      source: 'user',
+    });
+    importedQuestions.push(importedQuestion);
 
-    importedQuestions.push(
-      sanitizeQuestion(item, {
-        id: createId(),
-        seasonId: targetSeasonId,
-        motherId: inheritedMotherId,
-        source: 'user',
-      })
-    );
+    if (hasHistoricalMatch && inheritedMotherId === null) {
+      nextOverrides[importedQuestion.id] = null;
+    }
   });
 
   return {
@@ -331,6 +416,7 @@ export function importSeasonQuestions(state, items, seasonId, createId = default
       targetSeasonId || nextState.activeSeasonId
     ),
     userQuestions: [...nextState.userQuestions, ...importedQuestions],
+    classificationOverrides: nextOverrides,
     ...(Array.isArray(nextState.questions)
       ? { questions: [...nextState.questions, ...importedQuestions] }
       : {}),

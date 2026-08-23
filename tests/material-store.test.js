@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   getCoreMaterial,
   getQuestionMaterial,
+  parseStoredMaterials,
   pickPracticeMaterial,
   resolveMaterialForQuestion,
   upsertCoreMaterial,
@@ -64,6 +65,27 @@ test('upsertQuestionMaterial keeps exactly one dedicated material per question',
   assert.equal(secondPass.filter((material) => material.type === 'question-specific').length, 1);
   assert.equal(getQuestionMaterial(secondPass, 'q-1')?.id, 'question-b');
   assert.equal(getQuestionMaterial(secondPass, 'q-1')?.title, '未分类题专属素材新版');
+});
+
+test('upsertQuestionMaterial stores a normalized seasonId binding', () => {
+  const materials = upsertQuestionMaterial([], {
+    id: 'question-season',
+    questionId: 'q-season',
+    seasonId: ' 2026-09-12 ',
+    title: '季度专属素材',
+    story: '只用于这一季的这道题',
+  });
+
+  assert.equal(materials[0].seasonId, '2026-09-12');
+});
+
+test('parseStoredMaterials logs corrupt storage before returning recoverable empty state', () => {
+  const errors = [];
+  const parsed = parseStoredMaterials('{broken', (...args) => errors.push(args));
+
+  assert.deepEqual(parsed, []);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0][0], /material/i);
 });
 
 test('resolveMaterialForQuestion returns the core material for classified questions and the dedicated material for unclassified questions', () => {

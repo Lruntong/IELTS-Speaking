@@ -31,17 +31,27 @@ export function saveAnswer(state, answer) {
   }
 
   const updatedAt = normalizeTimestamp(answer?.updatedAt, new Date().toISOString());
+  const existing = normalizeSavedAnswers(state)[questionId] || {};
+  const seasonId = String(answer?.seasonId ?? existing.seasonId ?? '').trim();
   return {
     ...normalizeSavedAnswers(state),
     [questionId]: {
+      ...existing,
       ...answer,
       questionId,
+      seasonId,
       updatedAt,
     },
   };
 }
 
 export function isMaterialNewer(answer, material) {
+  const answerMaterialId = String(answer?.materialId ?? '').trim();
+  const currentMaterialId = String(material?.id ?? '').trim();
+  if (!answerMaterialId || !currentMaterialId || answerMaterialId !== currentMaterialId) {
+    return true;
+  }
+
   const answerMaterialAt = normalizeTimestamp(answer?.materialUpdatedAt, null);
   const currentMaterialAt = materialTimestamp(material);
   if (!answerMaterialAt || !currentMaterialAt) {

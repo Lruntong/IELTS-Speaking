@@ -7,6 +7,7 @@ import { classifyQuestionLocally } from './src/local-classifier.js';
 import {
     getCoreMaterial,
     getQuestionMaterial,
+    parseStoredMaterials,
     pickPracticeMaterial,
     resolveMaterialForQuestion,
     upsertCoreMaterial,
@@ -18,12 +19,15 @@ import {
 } from './src/material-highlighter.js';
 import { MOTHER_TOPICS, getMotherTopic } from './src/mother-topics.js';
 import {
+    applyClassificationDraft,
+    clearImportedBankData,
     createEmptyBankState,
     importSeasonQuestionsWithOfficial,
     mergeOfficialQuestions,
-    migrateLegacyBank,
+    parseStoredBank,
     serializeBankState
 } from './src/question-bank-store.js';
+import { parseTextImport } from './src/question-import-parser.js';
 import { resetBankQuestionPracticeContext } from './src/practice-session-state.js';
 import {
     getSavedAnswer,
@@ -116,6 +120,9 @@ let audioUrl = '';
 let selectedAccent = localStorage.getItem('ielts-reading-accent') || 'en-GB';
 let selectedRate = Number(localStorage.getItem('ielts-reading-rate') || '0.9');
 let sentenceIndex = 0;
+let practiceSessionToken = 0;
+let generationController = null;
+let reviewController = null;
 
 Object.entries(categoryConfig).forEach(([category, config]) => {
     keywordsByCategory[category] = Object.fromEntries(config.fields.map(([key]) => [key, '']));
@@ -145,12 +152,10 @@ function persistMaterials() {
 }
 
 function loadMaterials() {
-    try {
-        const parsed = JSON.parse(localStorage.getItem(MATERIAL_STORAGE_KEY) || '[]');
-        materials = Array.isArray(parsed) ? parsed.filter((material) => material?.id && material?.title && material?.story) : [];
-    } catch {
-        materials = [];
-    }
+    materials = parseStoredMaterials(
+        localStorage.getItem(MATERIAL_STORAGE_KEY),
+        (message, error) => console.error(message, error)
+    );
 }
 
 function selectedMaterial() {
@@ -218,7 +223,7 @@ function syncLatestAnswer(value) {
     if (answerReviewMode) {
         renderHighlightedReviewAnswer();
     }
-    saveAnswerBtn.disabled = !latestAnswer || !currentPracticeQuestion();
+    saveAnswerBtn.disabled = !latestAnswer || !currentPracticeQuestion() || !activePracticeMaterial();
     updateReadingControls();
 }
 
@@ -267,6 +272,8 @@ function clearRecordingReviewState() {
 
     if (recognition) {
         recognition.onend = null;
+        recognition.onresult = null;
+        recognition.onerror = null;
         try { recognition.stop(); } catch {}
         recognition = null;
     }
@@ -285,6 +292,10 @@ function clearRecordingReviewState() {
         URL.revokeObjectURL(audioUrl);
     }
     audioUrl = '';
+    try {
+        audioPlayback.pause();
+        audioPlayback.currentTime = 0;
+    } catch {}
     audioPlayback.removeAttribute('src');
     audioPlayback.classList.add('hidden');
 
@@ -306,34 +317,64 @@ function clearRecordingReviewState() {
     recordingStatus.textContent = '准备好后，开始录音。';
 }
 
-function exitBankQuestionContextForTopicEdit(typedTopic) {
+function abortPracticeRequests() {
+    generationController?.abort();
+    reviewController?.abort();
+    generationController = null;
+    reviewController = null;
+}
+
+function transitionPracticeContext({ questionId = '', materialId = '', topic = topicInput.value } = {}) {
     const reset = resetBankQuestionPracticeContext({
-        topic: typedTopic,
+        topic,
         practiceQuestionId,
         selectedMaterialId,
         latestAnswer,
-        answerText: resultText.value,
-        resultVisible: !resultSection.classList.contains('hidden'),
-        recordingVisible: !recordingSection.classList.contains('hidden'),
-        finalTranscript,
-        interimTranscript,
-        confirmedTranscript,
-        transcriptText: transcriptEditor.value,
-        reviewText: reviewText.textContent,
-        reviewVisible: !reviewPanel.classList.contains('hidden'),
-        savedAnswerStatus: savedAnswerStatus.textContent
+        sessionToken: practiceSessionToken
     });
 
-    practiceQuestionId = reset.practiceQuestionId;
-    selectedMaterialId = reset.selectedMaterialId;
-    latestAnswer = reset.latestAnswer;
-    resultText.value = reset.answerText;
-    setAnswerReviewMode(false);
-    resultSection.classList.toggle('hidden', !reset.resultVisible);
-    answerEmpty.classList.toggle('hidden', reset.resultVisible);
-    savedAnswerStatus.textContent = reset.savedAnswerStatus;
-    saveAnswerBtn.classList.add('hidden');
+    abortPracticeRequests();
+    practiceSessionToken = reset.sessionToken;
+    practiceQuestionId = questionId;
+    selectedMaterialId = materialId;
+    topicInput.value = String(topic || '');
+    clearAnswer();
     clearRecordingReviewState();
+    generateBtn.disabled = false;
+    loading.classList.add('hidden');
+}
+
+function beginPracticeRequest(type) {
+    abortPracticeRequests();
+    practiceSessionToken += 1;
+    const controller = new AbortController();
+    if (type === 'review') {
+        reviewController = controller;
+    } else {
+        generationController = controller;
+    }
+    return { controller, token: practiceSessionToken };
+}
+
+function isCurrentPracticeRequest(token, controller) {
+    return token === practiceSessionToken && !controller.signal.aborted;
+}
+
+function hasPracticeArtifacts() {
+    return Boolean(
+        latestAnswer
+        || generationController
+        || reviewController
+        || mediaRecorder
+        || finalTranscript
+        || interimTranscript
+        || confirmedTranscript
+        || reviewText.textContent
+    );
+}
+
+function exitBankQuestionContextForTopicEdit(typedTopic) {
+    transitionPracticeContext({ topic: typedTopic });
 }
 
 function renderSavedAnswerControls() {
@@ -343,10 +384,22 @@ function renderSavedAnswerControls() {
 
     editAnswerBtn.classList.toggle('hidden', !question || !answerReviewMode);
     saveAnswerBtn.classList.toggle('hidden', !question || answerReviewMode);
-    saveAnswerBtn.disabled = !question || !latestAnswer || answerReviewMode;
+    saveAnswerBtn.disabled = !question || !material || !latestAnswer || answerReviewMode;
 
     if (!question) {
         savedAnswerStatus.textContent = '';
+        return;
+    }
+
+    if (!material) {
+        savedAnswerStatus.textContent = saved
+            ? '素材绑定已缺失，旧答案已保留；请先准备素材后再重新生成。'
+            : latestAnswer ? '当前素材绑定缺失，无法保存答案。' : '';
+        return;
+    }
+
+    if (saved && (!saved.materialId || saved.materialId !== material.id)) {
+        savedAnswerStatus.textContent = '素材绑定已变化，旧答案已保留；请使用当前素材重新生成。';
         return;
     }
 
@@ -400,11 +453,11 @@ function materialBinding(material) {
 }
 
 function applyPracticeMaterialSelection(materialId) {
-    practiceQuestionId = '';
-    selectedMaterialId = materialId || '';
-    if (answerReviewMode) {
-        renderHighlightedReviewAnswer();
+    const nextMaterialId = materialId || '';
+    if (!practiceQuestionId && selectedMaterialId === nextMaterialId) {
+        return;
     }
+    transitionPracticeContext({ materialId: nextMaterialId, topic: topicInput.value });
 }
 
 function renderMaterialSelect() {
@@ -472,6 +525,14 @@ function renderMaterialList() {
         remove.type = 'button'; remove.className = 'material-delete-btn'; remove.textContent = '删除';
         remove.addEventListener('click', () => {
             if (!window.confirm(`确定删除「${material.title}」吗？`)) return;
+            const activeQuestion = currentPracticeQuestion();
+            if (activePracticeMaterial()?.id === material.id) {
+                transitionPracticeContext({
+                    questionId: activeQuestion?.id || '',
+                    materialId: '',
+                    topic: topicInput.value
+                });
+            }
             materials = materials.filter((item) => item.id !== material.id);
             if (selectedMaterialId === material.id) selectedMaterialId = '';
             persistMaterials();
@@ -678,9 +739,12 @@ function saveMaterial() {
         });
         selectedMaterialId = getCoreMaterial(materials, editingMaterialBinding.motherId)?.id || selectedMaterialId;
     } else if (editingMaterialBinding?.type === 'question-specific') {
+        const boundQuestion = getBaseQuestion(editingMaterialBinding.questionId)
+            || currentBankView().questions.find((question) => question.id === editingMaterialBinding.questionId);
         materials = upsertQuestionMaterial(materials, {
             id: editingMaterialId || createMaterialId(),
             questionId: editingMaterialBinding.questionId,
+            seasonId: boundQuestion?.seasonId || '',
             title,
             story,
             tags,
@@ -793,11 +857,19 @@ async function generateAnswer() {
     if (question && activePracticeSavedAnswer() && !window.confirm('这道题已经有保存答案。确定重新生成吗？')) {
         return;
     }
+    const { controller, token } = beginPracticeRequest('generation');
+    clearRecordingReviewState();
     generateBtn.disabled = true; loading.classList.remove('hidden'); latestAnswer = ''; resultText.value = ''; resultSection.classList.remove('hidden'); answerEmpty.classList.add('hidden'); setAnswerReviewMode(false); renderSavedAnswerControls();
     try {
-        const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(generationPayload(topic)) });
+        const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(generationPayload(topic)), signal: controller.signal });
+        if (!isCurrentPracticeRequest(token, controller)) return;
         if (!response.ok) throw new Error(await getErrorMessage(response));
-        await readSseStream(response, (content) => { latestAnswer += content; resultText.value = latestAnswer; });
+        await readSseStream(response, (content) => {
+            if (!isCurrentPracticeRequest(token, controller)) return;
+            latestAnswer += content;
+            resultText.value = latestAnswer;
+        });
+        if (!isCurrentPracticeRequest(token, controller)) return;
         if (!latestAnswer.trim()) throw new Error('没有生成答案，请重试。');
         syncLatestAnswer(latestAnswer);
         sentenceIndex = 0;
@@ -805,9 +877,16 @@ async function generateAnswer() {
         renderSavedAnswerControls();
         recordingSection.classList.remove('hidden');
     } catch (error) {
+        if (error?.name === 'AbortError' || !isCurrentPracticeRequest(token, controller)) return;
         if (!latestAnswer.trim()) clearAnswer();
         alert(`生成失败：${error.message}`);
-    } finally { generateBtn.disabled = false; loading.classList.add('hidden'); }
+    } finally {
+        if (generationController === controller) {
+            generationController = null;
+            generateBtn.disabled = false;
+            loading.classList.add('hidden');
+        }
+    }
 }
 
 function saveCurrentAnswer() {
@@ -815,6 +894,11 @@ function saveCurrentAnswer() {
     const material = activePracticeMaterial();
     const content = resultText.value.trim();
     if (!question || !content) {
+        return;
+    }
+    if (!material) {
+        alert('当前素材绑定缺失，无法保存答案。请先准备素材。');
+        renderSavedAnswerControls();
         return;
     }
 
@@ -828,6 +912,7 @@ function saveCurrentAnswer() {
         ...questionBankState,
         savedAnswers: saveAnswer(questionBankState.savedAnswers, {
             questionId: question.id,
+            seasonId: question.seasonId,
             topic: question.prompt,
             cues: question.cues || [],
             motherId: question.motherId || null,
@@ -882,13 +967,19 @@ function setupSpeechRecognition() {
 }
 async function startRecording() {
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) { alert('当前浏览器不支持录音。请使用最新版 Chrome 并允许麦克风权限。'); return; }
+    const recordingToken = practiceSessionToken;
     try {
         if (audioUrl) URL.revokeObjectURL(audioUrl); audioUrl = ''; audioPlayback.classList.add('hidden');
         finalTranscript = ''; interimTranscript = ''; confirmedTranscript = '';
         transcriptEditor.value = ''; transcriptEditor.disabled = true;
         transcriptHint.textContent = '正在识别英文内容；结束后请先检查转写。';
         confirmTranscriptBtn.disabled = true; reviewPanel.classList.add('hidden'); reviewBtn.disabled = true;
-        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true }); audioChunks = [];
+        const requestedStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (recordingToken !== practiceSessionToken) {
+            requestedStream.getTracks().forEach((track) => track.stop());
+            return;
+        }
+        mediaStream = requestedStream; audioChunks = [];
         mediaRecorder = new MediaRecorder(mediaStream);
         mediaRecorder.ondataavailable = (event) => { if (event.data.size) audioChunks.push(event.data); };
         mediaRecorder.onstop = () => {
@@ -897,7 +988,11 @@ async function startRecording() {
         };
         mediaRecorder.start(); setupSpeechRecognition(); startTimer();
         recordBtn.classList.add('recording'); recordBtn.innerHTML = '<span class="record-indicator"></span>结束录音'; recordingStatus.textContent = '正在录音。专注表达，不需要逐字背诵。';
-    } catch (error) { console.error(error); alert('无法开启麦克风。请检查浏览器的麦克风权限。'); }
+    } catch (error) {
+        if (recordingToken !== practiceSessionToken) return;
+        console.error(error);
+        alert('无法开启麦克风。请检查浏览器的麦克风权限。');
+    }
 }
 function stopRecording() {
     clearInterval(timerId); timerId = null;
@@ -930,15 +1025,30 @@ function invalidateConfirmedTranscript() {
 async function reviewSpeaking() {
     const transcript = confirmedTranscript.trim();
     if (!transcript) return;
+    const { controller, token } = beginPracticeRequest('review');
     reviewBtn.disabled = true; reviewLoading.classList.remove('hidden'); reviewPanel.classList.add('hidden'); reviewText.textContent = '';
     try {
         const material = activePracticeMaterial();
         const question = currentPracticeQuestion();
-        const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: 'speaking-review', topic: topicInput.value.trim(), transcript, referenceAnswer: latestAnswer, questionMotherId: question?.motherId || '', sourceMaterial: material || '' }) });
+        const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: 'speaking-review', topic: topicInput.value.trim(), transcript, questionMotherId: question?.motherId || '', sourceMaterial: material || '' }), signal: controller.signal });
+        if (!isCurrentPracticeRequest(token, controller)) return;
         if (!response.ok) throw new Error(await getErrorMessage(response));
-        let review = ''; await readSseStream(response, (content) => { review += content; reviewText.textContent = review; });
+        let review = ''; await readSseStream(response, (content) => {
+            if (!isCurrentPracticeRequest(token, controller)) return;
+            review += content;
+            reviewText.textContent = review;
+        });
+        if (!isCurrentPracticeRequest(token, controller)) return;
         if (!review.trim()) throw new Error('没有生成复盘。'); reviewPanel.classList.remove('hidden');
-    } catch (error) { alert(`复盘失败：${error.message}`); } finally { reviewBtn.disabled = !confirmedTranscript.trim(); reviewLoading.classList.add('hidden'); }
+    } catch (error) {
+        if (error?.name !== 'AbortError' && isCurrentPracticeRequest(token, controller)) alert(`复盘失败：${error.message}`);
+    } finally {
+        if (reviewController === controller) {
+            reviewController = null;
+            reviewBtn.disabled = !confirmedTranscript.trim();
+            reviewLoading.classList.add('hidden');
+        }
+    }
 }
 
 function updateReadingControls() {
@@ -1014,11 +1124,15 @@ const localClassificationCache = new Map();
 const importedClassificationDrafts = new Map();
 
 let questionBankState = createEmptyBankState();
+let pendingImport = null;
 let classificationDraft = null;
 let initialClassificationDraft = null;
+let classificationDeletedQuestionIds = new Set();
 let selectedClassificationTopicId = MOTHER_TOPICS[0]?.id || 'M1';
 let classificationDrag = null;
+let classificationNativeQuestionId = '';
 let latestClassificationProvider = 'local';
+let importInProgress = false;
 
 const bankSeason = $('#bankSeason');
 const bankText = $('#bankText');
@@ -1046,6 +1160,10 @@ const dialogDraftStatus = $('#dialogDraftStatus');
 const topicQuestionList = $('#topicQuestionList');
 const dialogPoolList = $('#dialogPoolList');
 const dialogPoolCount = $('#dialogPoolCount');
+const importTextBtn = $('#importTextBtn');
+const importFileBtn = $('#importFileBtn');
+const sampleBankBtn = $('#sampleBankBtn');
+const clearBankBtn = $('#clearBankBtn');
 
 function makeQuestionId() {
     return `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1073,10 +1191,10 @@ function rememberImportedDraftAssignments(assignments) {
     });
 }
 
-function getDraftSuggestedMotherId(question) {
+function getDraftSuggestedMotherId(question, bankState = questionBankState) {
     return resolveDraftMotherId(
         question,
-        questionBankState.classificationOverrides,
+        bankState.classificationOverrides,
         importedClassificationDrafts,
         getLocalClassification
     );
@@ -1113,31 +1231,50 @@ async function requestRemoteClassifications(questions) {
         throw new Error('分类响应格式不正确。');
     }
 
-    return payload.classifications
+    const classifications = payload.classifications
         .map((item) => ({
             id: String(item?.id || '').trim(),
             motherId: String(item?.motherId || '').trim()
         }))
-        .filter((item) => item.id && item.motherId);
+        .filter((item) => item.id && getMotherTopic(item.motherId));
+
+    return {
+        classifications,
+        provider: payload.provider,
+        incomplete: Boolean(payload.incomplete)
+    };
 }
 
-async function seedImportedClassificationDrafts(questions) {
+async function seedImportedClassificationDrafts(questions, bankState = questionBankState) {
     if (!questions.length) {
         return;
     }
 
-    const inherited = Object.fromEntries(
-        questions.map((question) => [question.id, question.motherId ?? null])
-    );
-    const unresolved = questions.filter((question) => !question.motherId);
+    const inherited = {};
+    const unresolved = [];
+    questions.forEach((question) => {
+        if (Object.prototype.hasOwnProperty.call(bankState.classificationOverrides, question.id)) {
+            inherited[question.id] = bankState.classificationOverrides[question.id];
+        } else if (question.motherId) {
+            inherited[question.id] = question.motherId;
+        } else {
+            unresolved.push(question);
+        }
+    });
     let remote = [];
 
     latestClassificationProvider = 'local';
 
     if (unresolved.length) {
         try {
-            remote = await requestRemoteClassifications(unresolved);
-            latestClassificationProvider = 'deepseek';
+            const remoteResult = await requestRemoteClassifications(unresolved);
+            remote = remoteResult.classifications;
+            const usableRemoteIds = new Set(
+                remote.filter((item) => unresolved.some((question) => question.id === item.id)).map((item) => item.id)
+            );
+            latestClassificationProvider = usableRemoteIds.size === 0
+                ? 'local'
+                : usableRemoteIds.size < unresolved.length ? 'mixed' : 'deepseek';
         } catch (error) {
             console.error('Initial classification request failed:', error);
         }
@@ -1154,25 +1291,8 @@ function persistBank() {
     localStorage.setItem(BANK_STORAGE_KEY, JSON.stringify(serialized));
 }
 
-function normalizeLoadedBank(parsed) {
-    if (!parsed || typeof parsed !== 'object') {
-        return createEmptyBankState();
-    }
-
-    if (parsed.schemaVersion === 2 || Array.isArray(parsed.userQuestions)) {
-        const serialized = serializeBankState(parsed);
-        delete serialized.questions;
-        return {
-            ...createEmptyBankState(),
-            ...serialized
-        };
-    }
-
-    return migrateLegacyBank(parsed);
-}
-
-function currentBankView() {
-    return mergeOfficialQuestions(questionBankState, OFFICIAL_QUESTION_BANK);
+function currentBankView(bankState = questionBankState) {
+    return mergeOfficialQuestions(bankState, OFFICIAL_QUESTION_BANK);
 }
 
 function syncActiveSeason(shouldPersist = true) {
@@ -1196,16 +1316,16 @@ function syncActiveSeason(shouldPersist = true) {
     return currentBankView();
 }
 
-function getActiveSeason(viewState = currentBankView()) {
-    return viewState.seasons.find((season) => season.id === questionBankState.activeSeasonId) || null;
+function getActiveSeason(viewState = currentBankView(), bankState = questionBankState) {
+    return viewState.seasons.find((season) => season.id === bankState.activeSeasonId) || null;
 }
 
-function getActiveSeasonQuestions(viewState = currentBankView()) {
-    if (!questionBankState.activeSeasonId) {
+function getActiveSeasonQuestions(viewState = currentBankView(), bankState = questionBankState) {
+    if (!bankState.activeSeasonId) {
         return [];
     }
 
-    return viewState.questions.filter((question) => question.seasonId === questionBankState.activeSeasonId);
+    return viewState.questions.filter((question) => question.seasonId === bankState.activeSeasonId);
 }
 
 function getBaseQuestion(questionId) {
@@ -1214,35 +1334,18 @@ function getBaseQuestion(questionId) {
         || null;
 }
 
-function getBaseMotherId(questionId) {
-    return getBaseQuestion(questionId)?.motherId ?? null;
-}
-
 function questionCategory(question) {
     const topic = getMotherTopic(question.motherId || getLocalClassification(question));
     return topic ? TOPIC_TO_CATEGORY[topic.legacyId] : currentCategory;
 }
 
 function loadBank() {
-    try {
-        const parsed = JSON.parse(localStorage.getItem(BANK_STORAGE_KEY) || 'null');
-        questionBankState = normalizeLoadedBank(parsed);
-    } catch {
-        questionBankState = createEmptyBankState();
-    }
+    questionBankState = parseStoredBank(
+        localStorage.getItem(BANK_STORAGE_KEY),
+        (message, error) => console.error(message, error)
+    );
 
     syncActiveSeason(false);
-}
-
-function parseTextImport(text) {
-    return text.split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => line && !line.startsWith('#'))
-        .map((line) => {
-            const parts = line.split('|').map((part) => part.trim()).filter(Boolean);
-            return { prompt: parts.shift() || '', cues: parts, tags: [], season: '' };
-        })
-        .filter((item) => item.prompt);
 }
 
 function parseCsvLine(line) {
@@ -1357,10 +1460,15 @@ function resolveImportGroups(items, seasonFallback) {
 }
 
 async function importQuestions(items, seasonFallback) {
+    if (classificationDialog?.open || importInProgress) {
+        importStatus.textContent = '请先完成或取消当前分类草稿。';
+        return false;
+    }
+
     const groups = resolveImportGroups(items, seasonFallback);
     if (!groups.length) {
         importStatus.textContent = '请先填写“季节 / 版本”，或在文件里为每道题提供 season 字段。';
-        return;
+        return false;
     }
 
     let nextState = questionBankState;
@@ -1383,21 +1491,42 @@ async function importQuestions(items, seasonFallback) {
     });
 
     const preferredSeasonId = sortSeasons(groups.map(({ seasonId }) => ({ id: seasonId })))[0]?.id;
-    questionBankState = {
+    nextState = {
         ...nextState,
         activeSeasonId: preferredSeasonId || nextState.activeSeasonId
     };
-    syncActiveSeason(false);
-    await seedImportedClassificationDrafts(addedQuestions);
-    persistBank();
-    renderBank();
 
     const skipped = submitted - added;
-    importStatus.textContent = added
-        ? `已新增 ${added} 题${skipped ? `，跳过 ${skipped} 条同季重复题` : ''}。打开“手动确认本季分类”即可检查草稿。`
-        : skipped
+    if (!added) {
+        importStatus.textContent = skipped
             ? `没有新增：${skipped} 条题目都与同季已有题目重复。`
             : '没有读到可导入的题目。';
+        return false;
+    }
+
+    importInProgress = true;
+    importTextBtn.disabled = true;
+    importFileBtn.disabled = true;
+    sampleBankBtn.disabled = true;
+    try {
+        await seedImportedClassificationDrafts(addedQuestions, nextState);
+    } finally {
+        importInProgress = false;
+        importTextBtn.disabled = false;
+        importFileBtn.disabled = false;
+        sampleBankBtn.disabled = false;
+    }
+    pendingImport = {
+        state: nextState,
+        addedQuestions,
+        submitted,
+        added,
+        skipped,
+        preferredSeasonId
+    };
+    importStatus.textContent = `已解析 ${added} 道待导入题${skipped ? `，跳过 ${skipped} 条同季重复题` : ''}；确认分类前不会写入题库。`;
+    openClassificationDialog();
+    return true;
 }
 
 const SAMPLE_BANK = [
@@ -1440,7 +1569,9 @@ function createQuestionCard(question, { previewOnly = false, draftMotherId = nul
         remove.className = 'q-remove';
         remove.textContent = '×';
         remove.title = '从题库中删除这道题';
-        remove.addEventListener('click', () => removeQuestion(question.id));
+        remove.addEventListener('click', () => previewOnly
+            ? removeQuestion(question.id)
+            : removeQuestionFromClassificationDraft(question.id));
         row1.appendChild(remove);
     }
 
@@ -1452,6 +1583,8 @@ function createQuestionCard(question, { previewOnly = false, draftMotherId = nul
     row2.appendChild(meta);
 
     if (!previewOnly) {
+        chip.draggable = true;
+        chip.setAttribute('aria-label', `${question.prompt}；可拖动或使用下拉修改母题`);
         const select = document.createElement('select');
         select.className = 'q-assign';
         select.title = '修改当前题目的母题草稿';
@@ -1612,6 +1745,10 @@ function removeQuestion(questionId) {
         return;
     }
 
+    if (practiceQuestionId === questionId) {
+        transitionPracticeContext({ topic: topicInput.value });
+    }
+
     questionBankState = {
         ...questionBankState,
         userQuestions: questionBankState.userQuestions.filter((question) => question.id !== questionId),
@@ -1632,6 +1769,22 @@ function removeQuestion(questionId) {
     }
 }
 
+function removeQuestionFromClassificationDraft(questionId) {
+    const bankState = pendingImport?.state || questionBankState;
+    const question = bankState.userQuestions.find((item) => item.id === questionId);
+    if (!question || !classificationDraft) {
+        return;
+    }
+
+    if (!window.confirm('确定从本次分类草稿中移除这道自导入题吗？只有确认分类后才会真正删除。')) {
+        return;
+    }
+
+    classificationDeletedQuestionIds.add(questionId);
+    delete classificationDraft[questionId];
+    renderClassificationDialog();
+}
+
 function clearBank() {
     if (!questionBankState.userQuestions.length && !Object.keys(questionBankState.classificationOverrides).length) {
         return;
@@ -1641,7 +1794,18 @@ function clearBank() {
         return;
     }
 
-    questionBankState = createEmptyBankState();
+    const activeQuestionId = practiceQuestionId;
+    questionBankState = clearImportedBankData(questionBankState);
+    if (activeQuestionId) {
+        const refreshedQuestion = currentBankView().questions.find((question) => question.id === activeQuestionId) || null;
+        transitionPracticeContext({
+            questionId: refreshedQuestion?.id || '',
+            materialId: refreshedQuestion
+                ? resolveMaterialForQuestion(materials, refreshedQuestion)?.material?.id || ''
+                : '',
+            topic: refreshedQuestion?.prompt || topicInput.value
+        });
+    }
     classificationDraft = null;
     initialClassificationDraft = null;
     localClassificationCache.clear();
@@ -1653,9 +1817,11 @@ function clearBank() {
 }
 
 function openInPractice(question) {
-    practiceQuestionId = question.id;
-    selectedMaterialId = resolveMaterialForQuestion(materials, question)?.material?.id || '';
-    topicInput.value = question.prompt;
+    transitionPracticeContext({
+        questionId: question.id,
+        materialId: resolveMaterialForQuestion(materials, question)?.material?.id || '',
+        topic: question.prompt
+    });
     applyCategory(questionCategory(question));
     const saved = activePracticeSavedAnswer();
     if (saved?.content) {
@@ -1669,9 +1835,9 @@ function openInPractice(question) {
     topicInput.focus();
 }
 
-function createClassificationDraft(questions) {
+function createClassificationDraft(questions, bankState = questionBankState) {
     return Object.fromEntries(
-        questions.map((question) => [question.id, getDraftSuggestedMotherId(question) ?? null])
+        questions.map((question) => [question.id, getDraftSuggestedMotherId(question, bankState) ?? null])
     );
 }
 
@@ -1692,7 +1858,8 @@ function countDraftChanges() {
         return 0;
     }
 
-    return Object.keys(classificationDraft).filter((questionId) => classificationDraft[questionId] !== initialClassificationDraft[questionId]).length;
+    return Object.keys(classificationDraft).filter((questionId) => classificationDraft[questionId] !== initialClassificationDraft[questionId]).length
+        + classificationDeletedQuestionIds.size;
 }
 
 function isClassificationDraftDirty() {
@@ -1738,9 +1905,11 @@ function renderClassificationDialog() {
         return;
     }
 
-    const viewState = currentBankView();
-    const season = getActiveSeason(viewState);
-    const seasonQuestions = getActiveSeasonQuestions(viewState);
+    const bankState = pendingImport?.state || questionBankState;
+    const viewState = currentBankView(bankState);
+    const season = getActiveSeason(viewState, bankState);
+    const seasonQuestions = getActiveSeasonQuestions(viewState, bankState)
+        .filter((question) => !classificationDeletedQuestionIds.has(question.id));
     const selectedTopic = getMotherTopic(selectedClassificationTopicId) || MOTHER_TOPICS[0];
     if (selectedTopic) {
         selectedClassificationTopicId = selectedTopic.id;
@@ -1754,7 +1923,9 @@ function renderClassificationDialog() {
         : '当前还没有可确认的季度。';
     dialogPreviewStep.textContent = latestClassificationProvider === 'deepseek'
         ? '已完成 AI 初步分类'
-        : '已使用本地规则完成初步分类';
+        : latestClassificationProvider === 'mixed'
+            ? '已使用 AI 与本地规则共同完成初步分类'
+            : '已使用本地规则完成初步分类';
     dialogDraftStatus.textContent = countDraftChanges()
         ? `已修改 ${countDraftChanges()} 题，确认前不会保存。`
         : '还没有改动；现在看到的是当前确认结果加上初步分类草稿。';
@@ -1795,13 +1966,18 @@ function renderClassificationDialog() {
 }
 
 function openClassificationDialog() {
-    const viewState = syncActiveSeason(false);
-    const seasonQuestions = getActiveSeasonQuestions(viewState);
+    let bankState = pendingImport?.state || questionBankState;
+    const viewState = pendingImport ? currentBankView(bankState) : syncActiveSeason(false);
+    if (!pendingImport) {
+        bankState = questionBankState;
+    }
+    const seasonQuestions = getActiveSeasonQuestions(viewState, bankState);
     if (!seasonQuestions.length) {
         return;
     }
 
-    classificationDraft = createClassificationDraft(seasonQuestions);
+    classificationDeletedQuestionIds = new Set();
+    classificationDraft = createClassificationDraft(seasonQuestions, bankState);
     initialClassificationDraft = { ...classificationDraft };
     if (!getMotherTopic(selectedClassificationTopicId)) {
         selectedClassificationTopicId = MOTHER_TOPICS[0]?.id || 'M1';
@@ -1816,14 +1992,29 @@ function closeClassificationDialog(forceDiscard = false) {
         return true;
     }
 
-    if (!forceDiscard && isClassificationDraftDirty() && !window.confirm('当前分类草稿还没有确认，确定要放弃这些更改吗？')) {
+    const discardingPendingImport = Boolean(pendingImport);
+    if (!forceDiscard && (discardingPendingImport || isClassificationDraftDirty()) && !window.confirm(
+        discardingPendingImport
+            ? '这批题目还没有确认，关闭会放弃整批待导入题。确定取消吗？'
+            : '当前分类草稿还没有确认，确定要放弃这些更改吗？'
+    )) {
         return false;
     }
 
+    const discardedPending = pendingImport;
     classificationDraft = null;
     initialClassificationDraft = null;
+    classificationDeletedQuestionIds = new Set();
+    pendingImport = null;
+    discardedPending?.addedQuestions.forEach((question) => {
+        importedClassificationDrafts.delete(question.id);
+        localClassificationCache.delete(question.id);
+    });
     clearClassificationDropTarget();
     classificationDialog.close();
+    if (!forceDiscard && discardedPending) {
+        importStatus.textContent = '已取消导入预览；题目和分类都没有写入题库。';
+    }
     return true;
 }
 
@@ -1832,27 +2023,48 @@ function confirmClassificationDraft() {
         return;
     }
 
-    const viewState = currentBankView();
-    const seasonQuestions = getActiveSeasonQuestions(viewState);
-    const nextOverrides = { ...questionBankState.classificationOverrides };
+    const importToCommit = pendingImport;
+    const deletedCount = classificationDeletedQuestionIds.size;
+    const bankState = importToCommit?.state || questionBankState;
+    const viewState = currentBankView(bankState);
+    const seasonQuestions = getActiveSeasonQuestions(viewState, bankState);
+    const questionsToConfirm = [...seasonQuestions];
+    const assignmentsToConfirm = { ...classificationDraft };
 
-    seasonQuestions.forEach((question) => {
-        const draftMotherId = classificationDraft[question.id] || null;
-        const baseMotherId = getBaseMotherId(question.id);
-        if (draftMotherId === baseMotherId) {
-            delete nextOverrides[question.id];
-        } else {
-            nextOverrides[question.id] = draftMotherId;
+    importToCommit?.addedQuestions.forEach((question) => {
+        if (!questionsToConfirm.some((item) => item.id === question.id)) {
+            questionsToConfirm.push(question);
+        }
+        if (!Object.prototype.hasOwnProperty.call(assignmentsToConfirm, question.id)) {
+            assignmentsToConfirm[question.id] = importedClassificationDrafts.has(question.id)
+                ? importedClassificationDrafts.get(question.id)
+                : question.motherId ?? null;
         }
     });
 
-    questionBankState = {
-        ...questionBankState,
-        classificationOverrides: nextOverrides
-    };
+    const activeQuestionId = practiceQuestionId;
+    questionBankState = applyClassificationDraft(
+        bankState,
+        questionsToConfirm,
+        assignmentsToConfirm,
+        classificationDeletedQuestionIds
+    );
+    if (activeQuestionId && questionsToConfirm.some((question) => question.id === activeQuestionId)) {
+        const refreshedQuestion = currentBankView().questions.find((question) => question.id === activeQuestionId) || null;
+        transitionPracticeContext({
+            questionId: refreshedQuestion?.id || '',
+            materialId: refreshedQuestion
+                ? resolveMaterialForQuestion(materials, refreshedQuestion)?.material?.id || ''
+                : '',
+            topic: refreshedQuestion?.prompt || topicInput.value
+        });
+    }
     persistBank();
     closeClassificationDialog(true);
     renderBank();
+    if (importToCommit) {
+        importStatus.textContent = `已确认并导入 ${importToCommit.added - deletedCount} 道题${importToCommit.skipped ? `，跳过 ${importToCommit.skipped} 条同季重复题` : ''}。`;
+    }
 }
 
 function classificationDropElements() {
@@ -1983,6 +2195,56 @@ function handleClassificationPointerCancel(event) {
     cleanupClassificationDrag();
 }
 
+function cleanupClassificationNativeDrag() {
+    classificationDialog?.querySelectorAll('.drag-origin').forEach((card) => card.classList.remove('drag-origin'));
+    classificationNativeQuestionId = '';
+    clearClassificationDropTarget();
+}
+
+function handleClassificationDragStart(event) {
+    if (!classificationDialog?.open || event.target.closest('select, button')) {
+        event.preventDefault();
+        return;
+    }
+
+    const card = event.target.closest('.draft-question-card');
+    if (!card?.dataset.questionId) {
+        event.preventDefault();
+        return;
+    }
+
+    classificationNativeQuestionId = card.dataset.questionId;
+    card.classList.add('drag-origin');
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', classificationNativeQuestionId);
+}
+
+function handleClassificationDragOver(event) {
+    const dropTarget = event.target.closest('[data-drop-mother-id]');
+    if (!classificationNativeQuestionId || !dropTarget || !classificationDialog.contains(dropTarget)) {
+        return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    clearClassificationDropTarget();
+    dropTarget.classList.add('is-drop-target');
+}
+
+function handleClassificationDrop(event) {
+    const dropTarget = event.target.closest('[data-drop-mother-id]');
+    if (!classificationNativeQuestionId || !dropTarget || !classificationDialog.contains(dropTarget)) {
+        return;
+    }
+
+    event.preventDefault();
+    applyDraftAssignment(
+        event.dataTransfer.getData('text/plain') || classificationNativeQuestionId,
+        dropTarget.dataset.dropMotherId || null
+    );
+    cleanupClassificationNativeDrag();
+}
+
 importTextBtn.addEventListener('click', async () => {
     const text = bankText.value.trim();
     if (!text) {
@@ -1990,7 +2252,6 @@ importTextBtn.addEventListener('click', async () => {
         return;
     }
     await importQuestions(parseTextImport(text), bankSeason.value.trim());
-    bankText.value = '';
 });
 importFileBtn.addEventListener('click', () => bankFile.click());
 bankFile.addEventListener('change', async () => {
@@ -2006,8 +2267,9 @@ bankFile.addEventListener('change', async () => {
     bankFile.value = '';
 });
 sampleBankBtn.addEventListener('click', async () => {
-    await importQuestions(SAMPLE_BANK, '');
-    recommendStatus.textContent = '示例已导入到三个季度。切换季度看预览，再打开弹窗确认本季分类。';
+    if (await importQuestions(SAMPLE_BANK, '')) {
+        recommendStatus.textContent = '示例题已进入待确认草稿；点击“确认分类”后才会写入题库。';
+    }
 });
 clearBankBtn.addEventListener('click', clearBank);
 seasonSelect.addEventListener('change', () => {
@@ -2030,8 +2292,20 @@ classificationDialog?.addEventListener('pointerdown', handleClassificationPointe
 classificationDialog?.addEventListener('pointermove', handleClassificationPointerMove);
 classificationDialog?.addEventListener('pointerup', handleClassificationPointerUp);
 classificationDialog?.addEventListener('pointercancel', handleClassificationPointerCancel);
+classificationDialog?.addEventListener('dragstart', handleClassificationDragStart);
+classificationDialog?.addEventListener('dragover', handleClassificationDragOver);
+classificationDialog?.addEventListener('drop', handleClassificationDrop);
+classificationDialog?.addEventListener('dragend', cleanupClassificationNativeDrag);
 
-categoryButtons.forEach((button) => button.addEventListener('click', () => applyCategory(button.dataset.category)));
+categoryButtons.forEach((button) => button.addEventListener('click', () => {
+    if (button.dataset.category !== currentCategory && hasPracticeArtifacts()) {
+        transitionPracticeContext({
+            materialId: currentPracticeQuestion() ? '' : selectedMaterialId,
+            topic: topicInput.value
+        });
+    }
+    applyCategory(button.dataset.category);
+}));
 $$('.nav-link').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.viewTarget)));
 materialSelect.addEventListener('change', () => { applyPracticeMaterialSelection(materialSelect.value); renderMaterials(); });
 materialSearch.addEventListener('input', renderMaterialList);
@@ -2041,6 +2315,12 @@ topicInput.addEventListener('input', () => {
         exitBankQuestionContextForTopicEdit(topicInput.value);
         renderMaterials();
         renderSavedAnswerControls();
+    } else if (!question && hasPracticeArtifacts()) {
+        transitionPracticeContext({
+            materialId: selectedMaterialId,
+            topic: topicInput.value
+        });
+        renderMaterials();
     }
 });
 prepareMaterialBtn.addEventListener('click', openMissingMaterialEditor);

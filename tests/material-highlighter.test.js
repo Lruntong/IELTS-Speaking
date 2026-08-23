@@ -24,6 +24,13 @@ test('ranges do not overlap and survive punctuation/case differences', () => {
   assert.deepEqual(ranges, [{ start: 10, end: 32 }]);
 });
 
+test('common answer-opening boilerplate is not highlighted as meaningful reuse', () => {
+  const material = 'I would like to talk about this topic today. The actual story is different.';
+  const answer = 'To begin, I would like to talk about this topic today, before giving my own example.';
+
+  assert.deepEqual(findReusedRanges(material, answer), []);
+});
+
 test('renderHighlightedAnswer builds text nodes and marks without writing markup', () => {
   const operations = [];
   const documentStub = {
