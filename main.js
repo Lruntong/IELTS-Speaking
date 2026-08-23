@@ -1,4 +1,5 @@
 import { OFFICIAL_QUESTION_BANK } from './data/question-bank.js';
+import { mergeClassificationResults } from './src/classification-merge.js';
 import { classifyQuestionLocally } from './src/local-classifier.js';
 import { MOTHER_TOPICS, getMotherTopic } from './src/mother-topics.js';
 import {
@@ -449,12 +450,14 @@ const TOPIC_TO_CATEGORY = Object.freeze({
 });
 const BANK_STORAGE_KEY = 'ielts-question-bank-v1';
 const localClassificationCache = new Map();
+const importedClassificationDrafts = new Map();
 
 let questionBankState = createEmptyBankState();
 let classificationDraft = null;
 let initialClassificationDraft = null;
 let selectedClassificationTopicId = MOTHER_TOPICS[0]?.id || 'M1';
 let classificationDrag = null;
+let latestClassificationProvider = 'local';
 
 const bankSeason = $('#bankSeason');
 const bankText = $('#bankText');
@@ -501,6 +504,90 @@ function getLocalClassification(question) {
     }
 
     return localClassificationCache.get(question.id) || null;
+}
+
+function rememberImportedDraftAssignments(assignments) {
+    Object.entries(assignments || {}).forEach(([questionId, motherId]) => {
+        importedClassificationDrafts.set(questionId, motherId || null);
+    });
+}
+
+function getDraftSuggestedMotherId(question) {
+    if (question?.motherId) {
+        return question.motherId;
+    }
+
+    if (question?.id && importedClassificationDrafts.has(question.id)) {
+        return importedClassificationDrafts.get(question.id) || null;
+    }
+
+    return getLocalClassification(question);
+}
+
+async function requestRemoteClassifications(questions) {
+    const response = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            task: 'mother-classify',
+            questions: questions.map((question) => ({
+                id: question.id,
+                prompt: question.prompt,
+                cues: question.cues || [],
+                tags: question.tags || [],
+                seasonId: question.seasonId
+            }))
+        })
+    });
+
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response));
+    }
+
+    let payload = null;
+    try {
+        payload = await response.json();
+    } catch {
+        throw new Error('分类响应解析失败。');
+    }
+
+    if (!payload || !Array.isArray(payload.classifications)) {
+        throw new Error('分类响应格式不正确。');
+    }
+
+    return payload.classifications
+        .map((item) => ({
+            id: String(item?.id || '').trim(),
+            motherId: String(item?.motherId || '').trim()
+        }))
+        .filter((item) => item.id && item.motherId);
+}
+
+async function seedImportedClassificationDrafts(questions) {
+    if (!questions.length) {
+        return;
+    }
+
+    const inherited = Object.fromEntries(
+        questions.map((question) => [question.id, question.motherId ?? null])
+    );
+    const unresolved = questions.filter((question) => !question.motherId);
+    let remote = [];
+
+    latestClassificationProvider = 'local';
+
+    if (unresolved.length) {
+        try {
+            remote = await requestRemoteClassifications(unresolved);
+            latestClassificationProvider = 'deepseek';
+        } catch (error) {
+            console.error('Initial classification request failed:', error);
+        }
+    }
+
+    rememberImportedDraftAssignments(
+        mergeClassificationResults(questions, inherited, remote, getLocalClassification)
+    );
 }
 
 function persistBank() {
@@ -711,7 +798,7 @@ function resolveImportGroups(items, seasonFallback) {
     return [];
 }
 
-function importQuestions(items, seasonFallback) {
+async function importQuestions(items, seasonFallback) {
     const groups = resolveImportGroups(items, seasonFallback);
     if (!groups.length) {
         importStatus.textContent = '请先填写“季节 / 版本”，或在文件里为每道题提供 season 字段。';
@@ -721,6 +808,7 @@ function importQuestions(items, seasonFallback) {
     let nextState = questionBankState;
     let added = 0;
     let submitted = 0;
+    const addedQuestions = [];
     groups.forEach(({ seasonId, items: seasonItems }) => {
         submitted += seasonItems.length;
         const before = nextState.userQuestions.length;
@@ -731,7 +819,9 @@ function importQuestions(items, seasonFallback) {
             seasonId,
             makeQuestionId
         );
-        added += nextState.userQuestions.length - before;
+        const importedThisGroup = nextState.userQuestions.slice(before);
+        addedQuestions.push(...importedThisGroup);
+        added += importedThisGroup.length;
     });
 
     const preferredSeasonId = sortSeasons(groups.map(({ seasonId }) => ({ id: seasonId })))[0]?.id;
@@ -740,6 +830,7 @@ function importQuestions(items, seasonFallback) {
         activeSeasonId: preferredSeasonId || nextState.activeSeasonId
     };
     syncActiveSeason(false);
+    await seedImportedClassificationDrafts(addedQuestions);
     persistBank();
     renderBank();
 
@@ -970,6 +1061,7 @@ function removeQuestion(questionId) {
         )
     };
     localClassificationCache.delete(questionId);
+    importedClassificationDrafts.delete(questionId);
     if (classificationDraft) {
         delete classificationDraft[questionId];
         delete initialClassificationDraft?.[questionId];
@@ -994,6 +1086,8 @@ function clearBank() {
     classificationDraft = null;
     initialClassificationDraft = null;
     localClassificationCache.clear();
+    importedClassificationDrafts.clear();
+    latestClassificationProvider = 'local';
     persistBank();
     renderBank();
     importStatus.textContent = '已清空自导入题目与分类覆盖。';
@@ -1008,7 +1102,7 @@ function openInPractice(question) {
 
 function createClassificationDraft(questions) {
     return Object.fromEntries(
-        questions.map((question) => [question.id, question.motherId ?? getLocalClassification(question) ?? null])
+        questions.map((question) => [question.id, getDraftSuggestedMotherId(question) ?? null])
     );
 }
 
@@ -1084,16 +1178,17 @@ function renderClassificationDialog() {
     }
 
     const importedCount = seasonQuestions.filter((question) => question.source !== 'official').length;
-    const localSuggestedCount = seasonQuestions.filter((question) => !question.motherId && getLocalClassification(question)).length;
     const unclassified = draftPoolQuestions(seasonQuestions);
 
     dialogImportStep.textContent = season
         ? `${season.label || season.id} · 共 ${seasonQuestions.length} 题 · 自导入 ${importedCount} · 官方 ${seasonQuestions.length - importedCount}`
         : '当前还没有可确认的季度。';
-    dialogPreviewStep.textContent = `草稿中已归类 ${seasonQuestions.length - unclassified.length} 题 · 未分类 ${unclassified.length} 题 · 本地建议 ${localSuggestedCount} 题`;
+    dialogPreviewStep.textContent = latestClassificationProvider === 'deepseek'
+        ? '已完成 AI 初步分类'
+        : '已使用本地规则完成初步分类';
     dialogDraftStatus.textContent = countDraftChanges()
         ? `已修改 ${countDraftChanges()} 题，确认前不会保存。`
-        : '还没有改动；现在看到的是当前确认结果加上本地识别草稿。';
+        : '还没有改动；现在看到的是当前确认结果加上初步分类草稿。';
     selectedTopicTitle.textContent = selectedTopic?.label || '未选择母题';
     selectedTopicDesc.textContent = selectedTopic
         ? `${selectedTopic.en} · ${selectedTopic.description}`
@@ -1319,13 +1414,13 @@ function handleClassificationPointerCancel(event) {
     cleanupClassificationDrag();
 }
 
-importTextBtn.addEventListener('click', () => {
+importTextBtn.addEventListener('click', async () => {
     const text = bankText.value.trim();
     if (!text) {
         importStatus.textContent = '先在上方粘贴题目（每行一题）。';
         return;
     }
-    importQuestions(parseTextImport(text), bankSeason.value.trim());
+    await importQuestions(parseTextImport(text), bankSeason.value.trim());
     bankText.value = '';
 });
 importFileBtn.addEventListener('click', () => bankFile.click());
@@ -1335,14 +1430,14 @@ bankFile.addEventListener('change', async () => {
     try {
         const text = await file.text();
         const items = file.name.toLowerCase().endsWith('.json') ? parseJSONImport(text) : parseCSVImport(text);
-        importQuestions(items, bankSeason.value.trim());
+        await importQuestions(items, bankSeason.value.trim());
     } catch (error) {
         importStatus.textContent = `文件解析失败：${error.message}`;
     }
     bankFile.value = '';
 });
-sampleBankBtn.addEventListener('click', () => {
-    importQuestions(SAMPLE_BANK, '');
+sampleBankBtn.addEventListener('click', async () => {
+    await importQuestions(SAMPLE_BANK, '');
     recommendStatus.textContent = '示例已导入到三个季度。切换季度看预览，再打开弹窗确认本季分类。';
 });
 clearBankBtn.addEventListener('click', clearBank);
