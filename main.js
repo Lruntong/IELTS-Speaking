@@ -1,3 +1,14 @@
+import { OFFICIAL_QUESTION_BANK } from './data/question-bank.js';
+import { classifyQuestionLocally } from './src/local-classifier.js';
+import { MOTHER_TOPICS, getMotherTopic } from './src/mother-topics.js';
+import {
+    createEmptyBankState,
+    importSeasonQuestions,
+    mergeOfficialQuestions,
+    migrateLegacyBank,
+    serializeBankState
+} from './src/question-bank-store.js';
+
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
@@ -425,22 +436,25 @@ function readNextSentence() {
     speak(sentences[current], () => {});
 }
 
-/* ================= 题库 · 固定 8 个母题格子 ================= */
-// 母题格子是硬编码的：无论用户导入哪一季的题库，界面永远显示这 8 个格子。
-// AI 聚类（/api/generate 的 slot-recommend）只生成“推荐映射”并以「AI建议」展示，从不改变分组。
-const MOTHER_SLOTS = [
-    { id: 'elder-person', label: '人物长辈', en: 'Elder & Mentor', desc: '长辈、老师、前辈' },
-    { id: 'peer-person', label: '人物同辈', en: 'Peer & Friend', desc: '朋友、同学、同龄人' },
-    { id: 'old-object', label: '旧物', en: 'Old Object', desc: '旧物品、礼物、纪念品' },
-    { id: 'virtual-object', label: '虚拟物', en: 'Virtual & Digital', desc: '应用、网站、虚拟物品' },
-    { id: 'nature-place', label: '自然地点', en: 'Natural Place', desc: '户外与自然环境' },
-    { id: 'indoor-place', label: '室内地点', en: 'Indoor Place', desc: '室内空间' },
-    { id: 'success-experience', label: '成功经历', en: 'Success', desc: '成就、第一次成功' },
-    { id: 'setback-experience', label: '挫折经历', en: 'Setback', desc: '失败、困难、低谷' }
-];
-const SLOT_TO_CATEGORY = { 'elder-person': 'person', 'peer-person': 'person', 'old-object': 'object', 'virtual-object': 'object', 'nature-place': 'place', 'indoor-place': 'place', 'success-experience': 'experience', 'setback-experience': 'experience' };
+/* ================= 题库 · 按季预览 + 确认式分类 ================= */
+const TOPIC_TO_CATEGORY = Object.freeze({
+    'elder-person': 'person',
+    'peer-person': 'person',
+    'old-object': 'object',
+    'virtual-object': 'object',
+    'nature-place': 'place',
+    'indoor-place': 'place',
+    'success-experience': 'experience',
+    'setback-experience': 'experience'
+});
 const BANK_STORAGE_KEY = 'ielts-question-bank-v1';
-const bank = { questions: [], assignments: {}, suggestions: {} };
+const localClassificationCache = new Map();
+
+let questionBankState = createEmptyBankState();
+let classificationDraft = null;
+let initialClassificationDraft = null;
+let selectedClassificationTopicId = MOTHER_TOPICS[0]?.id || 'M1';
+let classificationDrag = null;
 
 const bankSeason = $('#bankSeason');
 const bankText = $('#bankText');
@@ -448,47 +462,173 @@ const bankFile = $('#bankFile');
 const importStatus = $('#importStatus');
 const bankSummary = $('#bankSummary');
 const bankCount = $('#bankCount');
-const recommendBtn = $('#recommendBtn');
 const recommendStatus = $('#recommendStatus');
+const seasonSelect = $('#seasonSelect');
+const openImportModalBtn = $('#openImportModalBtn');
 const slotGrid = $('#slotGrid');
 const poolCell = $('#poolCell');
 const poolList = $('#poolList');
 const poolCount = $('#poolCount');
+const classificationDialog = $('#classificationDialog');
+const closeClassificationDialogBtn = $('#closeClassificationDialogBtn');
+const cancelClassificationBtn = $('#cancelClassificationBtn');
+const confirmClassificationBtn = $('#confirmClassificationBtn');
+const dialogImportStep = $('#dialogImportStep');
+const dialogPreviewStep = $('#dialogPreviewStep');
+const topicNav = $('#topicNav');
+const selectedTopicTitle = $('#selectedTopicTitle');
+const selectedTopicDesc = $('#selectedTopicDesc');
+const dialogDraftStatus = $('#dialogDraftStatus');
+const topicQuestionList = $('#topicQuestionList');
+const dialogPoolList = $('#dialogPoolList');
+const dialogPoolCount = $('#dialogPoolCount');
 
-function slotById(id) { return MOTHER_SLOTS.find((slot) => slot.id === id) || null; }
-function makeQuestionId() { return `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`; }
+function makeQuestionId() {
+    return `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function topicSortValue(topicId) {
+    return MOTHER_TOPICS.findIndex((topic) => topic.id === topicId);
+}
+
+function sortSeasons(seasons) {
+    return [...seasons].sort((left, right) => String(right.id).localeCompare(String(left.id)));
+}
+
+function getLocalClassification(question) {
+    if (!question?.id) {
+        return classifyQuestionLocally(question);
+    }
+
+    if (!localClassificationCache.has(question.id)) {
+        localClassificationCache.set(question.id, classifyQuestionLocally(question));
+    }
+
+    return localClassificationCache.get(question.id) || null;
+}
+
+function persistBank() {
+    const serialized = serializeBankState(questionBankState);
+    delete serialized.questions;
+    localStorage.setItem(BANK_STORAGE_KEY, JSON.stringify(serialized));
+}
+
+function normalizeLoadedBank(parsed) {
+    if (!parsed || typeof parsed !== 'object') {
+        return createEmptyBankState();
+    }
+
+    if (parsed.schemaVersion === 2 || Array.isArray(parsed.userQuestions)) {
+        const serialized = serializeBankState(parsed);
+        delete serialized.questions;
+        return {
+            ...createEmptyBankState(),
+            ...serialized
+        };
+    }
+
+    return migrateLegacyBank(parsed);
+}
+
+function currentBankView() {
+    return mergeOfficialQuestions(questionBankState, OFFICIAL_QUESTION_BANK);
+}
+
+function syncActiveSeason(shouldPersist = true) {
+    const viewState = currentBankView();
+    const seasons = sortSeasons(viewState.seasons);
+    const available = seasons.map((season) => season.id);
+    const nextSeasonId = available.includes(questionBankState.activeSeasonId)
+        ? questionBankState.activeSeasonId
+        : (available[0] || null);
+
+    if (questionBankState.activeSeasonId !== nextSeasonId) {
+        questionBankState = {
+            ...questionBankState,
+            activeSeasonId: nextSeasonId
+        };
+        if (shouldPersist) {
+            persistBank();
+        }
+    }
+
+    return currentBankView();
+}
+
+function getActiveSeason(viewState = currentBankView()) {
+    return viewState.seasons.find((season) => season.id === questionBankState.activeSeasonId) || null;
+}
+
+function getActiveSeasonQuestions(viewState = currentBankView()) {
+    if (!questionBankState.activeSeasonId) {
+        return [];
+    }
+
+    return viewState.questions.filter((question) => question.seasonId === questionBankState.activeSeasonId);
+}
+
+function getBaseQuestion(questionId) {
+    return questionBankState.userQuestions.find((question) => question.id === questionId)
+        || OFFICIAL_QUESTION_BANK.find((question) => question.id === questionId)
+        || null;
+}
+
+function getBaseMotherId(questionId) {
+    return getBaseQuestion(questionId)?.motherId ?? null;
+}
+
+function questionCategory(question) {
+    const topic = getMotherTopic(question.motherId || getLocalClassification(question));
+    return topic ? TOPIC_TO_CATEGORY[topic.legacyId] : currentCategory;
+}
 
 function loadBank() {
     try {
         const parsed = JSON.parse(localStorage.getItem(BANK_STORAGE_KEY) || 'null');
-        if (!parsed || !Array.isArray(parsed.questions)) return;
-        bank.questions = parsed.questions.filter((question) => question && question.id && question.prompt);
-        bank.assignments = parsed.assignments && typeof parsed.assignments === 'object' ? parsed.assignments : {};
-        bank.suggestions = parsed.suggestions && typeof parsed.suggestions === 'object' ? parsed.suggestions : {};
-    } catch { /* 保持空题库 */ }
+        questionBankState = normalizeLoadedBank(parsed);
+    } catch {
+        questionBankState = createEmptyBankState();
+    }
+
+    syncActiveSeason(false);
 }
 
-function persistBank() { localStorage.setItem(BANK_STORAGE_KEY, JSON.stringify(bank)); }
-
 function parseTextImport(text) {
-    return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith('#'))
+    return text.split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith('#'))
         .map((line) => {
             const parts = line.split('|').map((part) => part.trim()).filter(Boolean);
-            return { prompt: parts.shift() || '', cues: parts };
-        }).filter((item) => item.prompt);
+            return { prompt: parts.shift() || '', cues: parts, tags: [], season: '' };
+        })
+        .filter((item) => item.prompt);
 }
 
 function parseCsvLine(line) {
-    const cells = []; let current = ''; let inQuotes = false;
+    const cells = [];
+    let current = '';
+    let inQuotes = false;
     for (let i = 0; i < line.length; i += 1) {
         const char = line[i];
         if (inQuotes) {
             if (char === '"') {
-                if (line[i + 1] === '"') { current += '"'; i += 1; } else inQuotes = false;
-            } else current += char;
-        } else if (char === '"') inQuotes = true;
-        else if (char === ',') { cells.push(current); current = ''; }
-        else current += char;
+                if (line[i + 1] === '"') {
+                    current += '"';
+                    i += 1;
+                } else {
+                    inQuotes = false;
+                }
+            } else {
+                current += char;
+            }
+        } else if (char === '"') {
+            inQuotes = true;
+        } else if (char === ',') {
+            cells.push(current);
+            current = '';
+        } else {
+            current += char;
+        }
     }
     cells.push(current);
     return cells.map((cell) => cell.trim());
@@ -504,15 +644,19 @@ function parseCSVImport(text) {
     const tagsIdx = column(['tags', 'tag', '标签']);
     const seasonIdx = column(['season', '季', '季节']);
     if (promptIdx === -1) throw new Error('CSV 缺少题目列（prompt / question / title / 题目）。');
+
     const items = [];
     lines.slice(1).forEach((line) => {
         const cells = parseCsvLine(line);
         if (!cells[promptIdx]) return;
-        const cues = cuesIdx >= 0 ? cells[cuesIdx].split('|').map((cue) => cue.trim()).filter(Boolean) : [];
-        const tags = tagsIdx >= 0 ? cells[tagsIdx].split(/[,，]/).map((tag) => tag.trim()).filter(Boolean) : [];
-        const season = seasonIdx >= 0 ? cells[seasonIdx] : '';
-        items.push({ prompt: cells[promptIdx], cues, tags, season });
+        items.push({
+            prompt: cells[promptIdx],
+            cues: cuesIdx >= 0 ? cells[cuesIdx].split('|').map((cue) => cue.trim()).filter(Boolean) : [],
+            tags: tagsIdx >= 0 ? cells[tagsIdx].split(/[,，]/).map((tag) => tag.trim()).filter(Boolean) : [],
+            season: seasonIdx >= 0 ? cells[seasonIdx] : ''
+        });
     });
+
     if (!items.length) throw new Error('没有读到任何题目行。');
     return items;
 }
@@ -521,6 +665,7 @@ function parseJSONImport(text) {
     const data = JSON.parse(text);
     const list = Array.isArray(data) ? data : data?.questions || data?.data || null;
     if (!Array.isArray(list)) throw new Error('JSON 应为题目数组，或包含 questions 字段。');
+
     const items = list.map((item) => {
         const rawCues = item?.cue_points || item?.cues || item?.cue || item?.要点 || [];
         const rawTags = item?.tags || item?.tag || item?.标签 || [];
@@ -531,248 +676,653 @@ function parseJSONImport(text) {
             season: String(item?.season || item?.季 || '').trim()
         };
     }).filter((item) => item.prompt);
+
     if (!items.length) throw new Error('没有读到任何题目。');
     return items;
 }
 
-function importQuestions(items, seasonFallback) {
-    const seen = new Set(bank.questions.map((q) => q.prompt.trim().toLowerCase()));
-    let added = 0; let skipped = 0;
-    items.forEach((item) => {
-        const prompt = String(item.prompt || '').trim();
-        if (!prompt) return;
-        const key = prompt.toLowerCase();
-        if (seen.has(key)) { skipped += 1; return; }
-        seen.add(key);
-        bank.questions.push({
-            id: makeQuestionId(),
-            prompt,
-            cues: (item.cues || []).map((cue) => String(cue).trim()).filter(Boolean).slice(0, 4),
-            tags: (item.tags || []).map((tag) => String(tag).trim()).filter(Boolean).slice(0, 6),
-            season: String(item.season || seasonFallback || '').trim() || '未注明季节',
-            importedAt: Date.now()
-        });
-        added += 1;
+function resolveImportGroups(items, seasonFallback) {
+    const targetSeasonId = String(seasonFallback || '').trim();
+    const normalizedItems = items
+        .map((item) => ({
+            ...item,
+            prompt: String(item?.prompt || '').trim(),
+            season: String(item?.season || '').trim()
+        }))
+        .filter((item) => item.prompt);
+
+    if (targetSeasonId) {
+        return [{ seasonId: targetSeasonId, items: normalizedItems }];
+    }
+
+    const grouped = new Map();
+    normalizedItems.forEach((item) => {
+        if (!item.season) {
+            return;
+        }
+
+        if (!grouped.has(item.season)) {
+            grouped.set(item.season, []);
+        }
+
+        grouped.get(item.season).push(item);
     });
+
+    if (grouped.size && [...grouped.values()].every((group) => group.length > 0) && grouped.size === new Set(normalizedItems.map((item) => item.season).filter(Boolean)).size && normalizedItems.every((item) => item.season)) {
+        return [...grouped.entries()].map(([seasonId, seasonItems]) => ({ seasonId, items: seasonItems }));
+    }
+
+    return [];
+}
+
+function importQuestions(items, seasonFallback) {
+    const groups = resolveImportGroups(items, seasonFallback);
+    if (!groups.length) {
+        importStatus.textContent = '请先填写“季节 / 版本”，或在文件里为每道题提供 season 字段。';
+        return;
+    }
+
+    let nextState = questionBankState;
+    let added = 0;
+    let submitted = 0;
+    groups.forEach(({ seasonId, items: seasonItems }) => {
+        submitted += seasonItems.length;
+        const before = nextState.userQuestions.length;
+        nextState = importSeasonQuestions(nextState, seasonItems, seasonId, makeQuestionId);
+        added += nextState.userQuestions.length - before;
+    });
+
+    const preferredSeasonId = sortSeasons(groups.map(({ seasonId }) => ({ id: seasonId })))[0]?.id;
+    questionBankState = {
+        ...nextState,
+        activeSeasonId: preferredSeasonId || nextState.activeSeasonId
+    };
+    syncActiveSeason(false);
     persistBank();
     renderBank();
-    updateRecommendButton();
+
+    const skipped = submitted - added;
     importStatus.textContent = added
-        ? `已新增 ${added} 题${skipped ? `，跳过 ${skipped} 条重复` : ''}。当前共 ${bank.questions.length} 题。`
-        : skipped ? `没有新增：${skipped} 条都与题库中已有题目重复。` : '没有读到可导入的题目。';
+        ? `已新增 ${added} 题${skipped ? `，跳过 ${skipped} 条同季重复题` : ''}。打开“手动确认本季分类”即可检查草稿。`
+        : skipped
+            ? `没有新增：${skipped} 条题目都与同季已有题目重复。`
+            : '没有读到可导入的题目。';
 }
 
 const SAMPLE_BANK = [
-    { prompt: 'Describe an old person you enjoy talking to.', cues: ['who he/she is', 'what you talk about', 'why you enjoy talking to him/her'], season: '2026-09' },
-    { prompt: 'Describe a friend who helped you in a difficult time.', cues: ['who the friend is', 'what happened', 'how he/she helped you'], season: '2026-09' },
-    { prompt: 'Describe an object you have kept for a long time.', cues: ['what it is', 'how you got it', 'why you keep it'], season: '2026-09' },
-    { prompt: 'Describe an app or a website that you use often.', cues: ['what it is', 'how you use it', 'why you like it'], season: '2026-05' },
-    { prompt: 'Describe a natural place you would like to visit again.', cues: ['where it is', 'what you did there', 'why you want to go back'], season: '2026-05' },
-    { prompt: 'Describe a room or a place indoors where you like to spend time.', cues: ['where it is', 'what you do there', 'why you like it'], season: '2026-05' },
-    { prompt: 'Describe a time you achieved something you were proud of.', cues: ['what you achieved', 'how you did it', 'how you felt'], season: '2026-01' },
-    { prompt: 'Describe a time you failed at something and what you learned from it.', cues: ['what it was', 'why it happened', 'what you learned'], season: '2026-01' }
+    { prompt: 'Describe an old person you enjoy talking to.', cues: ['who he/she is', 'what you talk about', 'why you enjoy talking to him/her'], season: '2026-09-01' },
+    { prompt: 'Describe a friend who helped you in a difficult time.', cues: ['who the friend is', 'what happened', 'how he/she helped you'], season: '2026-09-01' },
+    { prompt: 'Describe an object you have kept for a long time.', cues: ['what it is', 'how you got it', 'why you keep it'], season: '2026-09-01' },
+    { prompt: 'Describe an app or a website that you use often.', cues: ['what it is', 'how you use it', 'why you like it'], season: '2026-05-08' },
+    { prompt: 'Describe a natural place you would like to visit again.', cues: ['where it is', 'what you did there', 'why you want to go back'], season: '2026-05-08' },
+    { prompt: 'Describe a room or a place indoors where you like to spend time.', cues: ['where it is', 'what you do there', 'why you like it'], season: '2026-05-08' },
+    { prompt: 'Describe a time you achieved something you were proud of.', cues: ['what you achieved', 'how you did it', 'how you felt'], season: '2026-01-01' },
+    { prompt: 'Describe a time you failed at something and what you learned from it.', cues: ['what it was', 'why it happened', 'what you learned'], season: '2026-01-01' }
 ];
 
-function assignedSlotCount(slotId) { return bank.questions.filter((q) => bank.assignments[q.id] === slotId).length; }
+function createMetaText(question) {
+    const sourceLabel = question.source === 'official' ? '官方' : '自导入';
+    const cuesLabel = question.cues?.length ? `${question.cues.length} 个 cue` : null;
+    return [question.seasonId, sourceLabel, cuesLabel, ...(question.tags || [])].filter(Boolean).join(' · ');
+}
 
-function questionChip(question) {
+function createQuestionCard(question, { previewOnly = false, draftMotherId = null } = {}) {
     const chip = document.createElement('article');
-    chip.className = 'question-chip';
-    chip.draggable = true;
+    chip.className = `question-chip${previewOnly ? ' preview-question-card' : ' draft-question-card'}`;
+    chip.dataset.questionId = question.id;
 
-    const row1 = document.createElement('div'); row1.className = 'question-chip-row';
-    const prompt = document.createElement('p'); prompt.className = 'q-prompt'; prompt.textContent = question.prompt; prompt.title = '点击这道题，去练习页生成答案';
-    prompt.addEventListener('click', () => openInPractice(question));
-    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'q-remove'; remove.textContent = '×'; remove.title = '从题库中删除这道题';
-    remove.addEventListener('click', () => removeQuestion(question.id));
-    row1.append(prompt, remove);
+    const row1 = document.createElement('div');
+    row1.className = 'question-chip-row';
 
-    const row2 = document.createElement('div'); row2.className = 'q-meta-row';
-    const meta = document.createElement('p'); meta.className = 'q-meta';
-    meta.textContent = [question.season, ...question.tags].filter(Boolean).join(' · ') || '未分类';
-    const select = document.createElement('select'); select.className = 'q-assign'; select.title = '分配到固定格子';
-    const noneOption = document.createElement('option'); noneOption.value = ''; noneOption.textContent = '未分配';
-    select.appendChild(noneOption);
-    MOTHER_SLOTS.forEach((slot) => {
-        const option = document.createElement('option'); option.value = slot.id; option.textContent = slot.label;
-        select.appendChild(option);
-    });
-    select.value = bank.assignments[question.id] || '';
-    select.addEventListener('change', () => assignQuestion(question.id, select.value));
-    row2.append(meta, select);
+    const promptButton = document.createElement('button');
+    promptButton.type = 'button';
+    promptButton.className = 'q-link-button';
+    promptButton.textContent = question.prompt;
+    promptButton.title = '点击这道题，去练习页生成答案';
+    promptButton.addEventListener('click', () => openInPractice(question));
+
+    row1.appendChild(promptButton);
+
+    if (question.source !== 'official') {
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'q-remove';
+        remove.textContent = '×';
+        remove.title = '从题库中删除这道题';
+        remove.addEventListener('click', () => removeQuestion(question.id));
+        row1.appendChild(remove);
+    }
+
+    const row2 = document.createElement('div');
+    row2.className = 'q-meta-row';
+    const meta = document.createElement('p');
+    meta.className = 'q-meta';
+    meta.textContent = createMetaText(question);
+    row2.appendChild(meta);
+
+    if (!previewOnly) {
+        const select = document.createElement('select');
+        select.className = 'q-assign';
+        select.title = '修改当前题目的母题草稿';
+        select.innerHTML = '<option value="">未分类</option>';
+        MOTHER_TOPICS.forEach((topic) => {
+            const option = document.createElement('option');
+            option.value = topic.id;
+            option.textContent = topic.label;
+            select.appendChild(option);
+        });
+        select.value = draftMotherId || '';
+        select.addEventListener('change', () => applyDraftAssignment(question.id, select.value || null));
+        row2.appendChild(select);
+    }
 
     chip.append(row1, row2);
 
-    const suggestion = bank.suggestions[question.id];
-    if (suggestion && slotById(suggestion.slot)) {
-        const slot = slotById(suggestion.slot);
-        const accepted = bank.assignments[question.id] === suggestion.slot;
-        const badge = document.createElement('button');
-        badge.type = 'button';
-        badge.className = `q-suggest${accepted ? ' accepted' : ''}`;
-        badge.title = `理由：${suggestion.reason || ''}。点击采纳这条建议。`;
-        badge.textContent = `AI建议：${slot.label}${accepted ? '（已采纳）' : ` · ${suggestion.reason || ''}`}`;
-        badge.addEventListener('click', () => {
-            if (bank.assignments[question.id] === suggestion.slot) return;
-            assignQuestion(question.id, suggestion.slot);
-            recommendStatus.textContent = `已按 AI 建议把题目放入「${slot.label}」。分组由你决定，随时可以拖回或改选。`;
-        });
-        chip.appendChild(badge);
+    if (!previewOnly) {
+        const badges = document.createElement('div');
+        badges.className = 'draft-card-badges';
+
+        const confirmedMotherId = question.motherId ?? null;
+        if (confirmedMotherId) {
+            const confirmedBadge = document.createElement('span');
+            confirmedBadge.className = 'q-status-badge';
+            confirmedBadge.textContent = `已确认 ${getMotherTopic(confirmedMotherId)?.label || confirmedMotherId}`;
+            badges.appendChild(confirmedBadge);
+        }
+
+        const localMotherId = !confirmedMotherId ? getLocalClassification(question) : null;
+        if (localMotherId) {
+            const localBadge = document.createElement('span');
+            localBadge.className = 'q-status-badge accent';
+            localBadge.textContent = `本地建议 ${getMotherTopic(localMotherId)?.label || localMotherId}`;
+            badges.appendChild(localBadge);
+        }
+
+        if (badges.childElementCount) {
+            chip.appendChild(badges);
+        }
     }
 
-    chip.addEventListener('dragstart', (event) => {
-        event.dataTransfer.setData('text/plain', question.id);
-        event.dataTransfer.effectAllowed = 'move';
-        chip.classList.add('dragging');
-    });
-    chip.addEventListener('dragend', () => {
-        chip.classList.remove('dragging');
-        $$('.slot-cell').forEach((cell) => cell.classList.remove('drag-over'));
-    });
     return chip;
 }
 
-function makeDroppable(element, slotId) {
-    element.addEventListener('dragover', (event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; element.classList.add('drag-over'); });
-    element.addEventListener('dragleave', (event) => { if (!element.contains(event.relatedTarget)) element.classList.remove('drag-over'); });
-    element.addEventListener('drop', (event) => {
-        event.preventDefault();
-        element.classList.remove('drag-over');
-        const questionId = event.dataTransfer.getData('text/plain');
-        if (questionId) assignQuestion(questionId, slotId);
-    });
+function renderSlot(topic, questions) {
+    const cell = document.createElement('section');
+    cell.className = 'slot-cell';
+    cell.setAttribute('aria-label', `${topic.label}格子`);
+    const head = document.createElement('div');
+    head.className = 'slot-head';
+    const titles = document.createElement('div');
+    const title = document.createElement('h3');
+    title.textContent = topic.label;
+    const sub = document.createElement('p');
+    sub.className = 'slot-en';
+    sub.textContent = `${topic.en} · ${topic.description}`;
+    titles.append(title, sub);
+    const count = document.createElement('span');
+    count.className = 'slot-count';
+    count.textContent = questions.length;
+    head.append(titles, count);
+
+    const list = document.createElement('div');
+    list.className = 'slot-list';
+    if (!questions.length) {
+        const empty = document.createElement('p');
+        empty.className = 'slot-empty';
+        empty.textContent = '当前季度里还没有确认到这个母题。';
+        list.appendChild(empty);
+    } else {
+        questions.forEach((question) => list.appendChild(createQuestionCard(question, { previewOnly: true })));
+    }
+
+    cell.append(head, list);
+    slotGrid.appendChild(cell);
 }
 
-function renderSlots() {
+function renderSeasonSelect(viewState) {
+    const seasons = sortSeasons(viewState.seasons);
+    seasonSelect.innerHTML = '';
+    if (!seasons.length) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = '先导入一个季度';
+        seasonSelect.appendChild(option);
+        seasonSelect.disabled = true;
+        return;
+    }
+
+    seasons.forEach((season) => {
+        const option = document.createElement('option');
+        option.value = season.id;
+        option.textContent = `${season.label || season.id} · ${season.id}`;
+        seasonSelect.appendChild(option);
+    });
+
+    seasonSelect.disabled = false;
+    seasonSelect.value = questionBankState.activeSeasonId || seasons[0].id;
+}
+
+function renderPreviewBoard(viewState) {
+    const seasonQuestions = getActiveSeasonQuestions(viewState);
     slotGrid.innerHTML = '';
-    MOTHER_SLOTS.forEach((slot) => {
-        const cell = document.createElement('section');
-        cell.className = 'slot-cell';
-        cell.dataset.slot = slot.id;
-        cell.setAttribute('aria-label', `${slot.label}格子`);
-        const head = document.createElement('div'); head.className = 'slot-head';
-        const titles = document.createElement('div');
-        const title = document.createElement('h3'); title.textContent = slot.label;
-        const sub = document.createElement('p'); sub.className = 'slot-en'; sub.textContent = `${slot.en} · ${slot.desc}`;
-        titles.append(title, sub);
-        const count = document.createElement('span'); count.className = 'slot-count'; count.textContent = assignedSlotCount(slot.id);
-        head.append(titles, count);
-        const list = document.createElement('div'); list.className = 'slot-list';
-        const items = bank.questions.filter((q) => bank.assignments[q.id] === slot.id);
-        if (!items.length) { const empty = document.createElement('p'); empty.className = 'slot-empty'; empty.textContent = '空 · 把题目拖进来'; list.appendChild(empty); }
-        else items.forEach((q) => list.appendChild(questionChip(q)));
-        cell.append(head, list);
-        makeDroppable(cell, slot.id);
-        slotGrid.appendChild(cell);
+    MOTHER_TOPICS.forEach((topic) => {
+        renderSlot(
+            topic,
+            seasonQuestions
+                .filter((question) => question.motherId === topic.id)
+                .sort((left, right) => left.prompt.localeCompare(right.prompt))
+        );
     });
-}
 
-function renderPool() {
+    const unclassified = seasonQuestions
+        .filter((question) => !question.motherId)
+        .sort((left, right) => left.prompt.localeCompare(right.prompt));
     poolList.innerHTML = '';
-    const items = bank.questions.filter((q) => !bank.assignments[q.id]);
-    poolCount.textContent = items.length;
-    if (!items.length) {
-        const empty = document.createElement('p'); empty.className = 'slot-empty';
-        empty.textContent = bank.questions.length ? '所有题目都已分配。拖回这里即可取消分配。' : '还没有题目。先导入任意一季的题库，或载入示例。';
+    poolCount.textContent = unclassified.length;
+    if (!unclassified.length) {
+        const empty = document.createElement('p');
+        empty.className = 'slot-empty';
+        empty.textContent = seasonQuestions.length
+            ? '当前季度的题目都已经确认分类。'
+            : '这个季度还没有题目。先导入题库或载入示例。';
         poolList.appendChild(empty);
-    } else items.forEach((q) => poolList.appendChild(questionChip(q)));
+    } else {
+        unclassified.forEach((question) => poolList.appendChild(createQuestionCard(question, { previewOnly: true })));
+    }
 }
 
 function renderBank() {
-    renderSlots();
-    renderPool();
-    const seasons = [...new Set(bank.questions.map((q) => q.season).filter(Boolean))];
-    const assigned = bank.questions.filter((q) => bank.assignments[q.id]).length;
-    bankSummary.textContent = `共 ${bank.questions.length} 题 · 已分配 ${assigned} · 待分配 ${bank.questions.length - assigned}${seasons.length ? ` · ${seasons.join(' / ')}` : ''}`;
-    bankCount.textContent = bank.questions.length;
-}
+    const viewState = syncActiveSeason(false);
+    const season = getActiveSeason(viewState);
+    const seasonQuestions = getActiveSeasonQuestions(viewState);
+    const confirmedCount = seasonQuestions.filter((question) => question.motherId).length;
 
-function assignQuestion(questionId, slotId) {
-    if (!bank.questions.some((q) => q.id === questionId)) return;
-    if (slotId && !slotById(slotId)) return;
-    if ((bank.assignments[questionId] || '') === slotId) return;
-    if (slotId) bank.assignments[questionId] = slotId;
-    else delete bank.assignments[questionId];
-    persistBank();
-    renderBank();
+    renderSeasonSelect(viewState);
+    renderPreviewBoard(viewState);
+
+    bankSummary.textContent = season
+        ? `共 ${viewState.questions.length} 题 · 当前季度 ${season.label || season.id} · 已确认 ${confirmedCount} · 待确认 ${seasonQuestions.length - confirmedCount}`
+        : '共 0 题 · 先导入任意一季的题库，再按季度确认母题分类。';
+    bankCount.textContent = viewState.questions.length;
+    recommendStatus.textContent = seasonQuestions.length
+        ? '本地识别会先生成保守草稿；只有在弹窗里点击“确认分类”，本季覆盖结果才会写入题库。'
+        : '选择一个季度查看已确认分类；弹窗里的拖拽和下拉都只会改草稿，不会即时保存。';
+    openImportModalBtn.disabled = !seasonQuestions.length;
 }
 
 function removeQuestion(questionId) {
-    bank.questions = bank.questions.filter((q) => q.id !== questionId);
-    delete bank.assignments[questionId];
-    delete bank.suggestions[questionId];
+    const existing = questionBankState.userQuestions.find((question) => question.id === questionId);
+    if (!existing) {
+        return;
+    }
+
+    if (!window.confirm('确定从你的题库中删除这道题吗？')) {
+        return;
+    }
+
+    questionBankState = {
+        ...questionBankState,
+        userQuestions: questionBankState.userQuestions.filter((question) => question.id !== questionId),
+        classificationOverrides: Object.fromEntries(
+            Object.entries(questionBankState.classificationOverrides).filter(([id]) => id !== questionId)
+        )
+    };
+    localClassificationCache.delete(questionId);
+    if (classificationDraft) {
+        delete classificationDraft[questionId];
+        delete initialClassificationDraft?.[questionId];
+    }
     persistBank();
     renderBank();
-    updateRecommendButton();
+    if (classificationDialog?.open) {
+        renderClassificationDialog();
+    }
 }
 
 function clearBank() {
-    if (!bank.questions.length) return;
-    if (!window.confirm('确定清空整个题库吗？已分配的格子和 AI 建议也会一并清除。')) return;
-    bank.questions = []; bank.assignments = {}; bank.suggestions = {};
-    persistBank(); renderBank(); updateRecommendButton();
-    importStatus.textContent = '题库已清空。';
+    if (!questionBankState.userQuestions.length && !Object.keys(questionBankState.classificationOverrides).length) {
+        return;
+    }
+
+    if (!window.confirm('确定清空你导入的题库与分类覆盖吗？官方示例题仍会保留。')) {
+        return;
+    }
+
+    questionBankState = createEmptyBankState();
+    classificationDraft = null;
+    initialClassificationDraft = null;
+    localClassificationCache.clear();
+    persistBank();
+    renderBank();
+    importStatus.textContent = '已清空自导入题目与分类覆盖。';
 }
 
 function openInPractice(question) {
     topicInput.value = question.prompt;
-    const slotId = bank.assignments[question.id];
-    if (slotId && SLOT_TO_CATEGORY[slotId]) applyCategory(SLOT_TO_CATEGORY[slotId]);
+    applyCategory(questionCategory(question));
     switchView('practiceView');
     topicInput.focus();
 }
 
-function updateRecommendButton() {
-    const pending = bank.questions.filter((q) => !bank.suggestions[q.id]);
-    if (!bank.questions.length) { recommendBtn.disabled = true; recommendBtn.textContent = 'AI 推荐映射（仅建议，不改分组）'; return; }
-    recommendBtn.disabled = false;
-    recommendBtn.textContent = pending.length
-        ? `AI 推荐映射（待推荐 ${pending.length} 题）`
-        : `AI 推荐映射（已推荐 ${bank.questions.length} 题，可更新）`;
+function createClassificationDraft(questions) {
+    return Object.fromEntries(
+        questions.map((question) => [question.id, question.motherId ?? getLocalClassification(question) ?? null])
+    );
 }
 
-async function recommendAll() {
-    const targets = bank.questions.filter((q) => !bank.suggestions[q.id]);
-    const questions = targets.length ? targets : bank.questions.slice();
-    if (!questions.length) return;
-    recommendBtn.disabled = true;
-    const batches = [];
-    for (let i = 0; i < questions.length; i += 20) batches.push(questions.slice(i, i + 20));
-    let failed = false;
-    for (let index = 0; index < batches.length; index += 1) {
-        const batch = batches[index];
-        recommendStatus.textContent = `正在让 AI 推荐映射… 第 ${index + 1}/${batches.length} 批（仅建议，不改分组）`;
-        try {
-            const response = await fetch('/api/generate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    task: 'slot-recommend',
-                    questions: batch.map(({ id, prompt, cues, tags, season }) => ({ id, prompt, cues, tags, season }))
-                })
-            });
-            if (!response.ok) throw new Error(await getErrorMessage(response));
-            const data = await response.json();
-            (data.recommendations || []).forEach((rec) => {
-                if (rec.id && rec.slot && slotById(rec.slot)) bank.suggestions[rec.id] = { slot: rec.slot, reason: rec.reason || '', at: Date.now() };
-            });
-            persistBank();
-        } catch (error) {
-            failed = true;
-            alert(`AI 推荐失败：${error.message}`);
-            break;
-        }
+function draftQuestionsByTopic(questions, topicId) {
+    return questions
+        .filter((question) => classificationDraft?.[question.id] === topicId)
+        .sort((left, right) => left.prompt.localeCompare(right.prompt));
+}
+
+function draftPoolQuestions(questions) {
+    return questions
+        .filter((question) => !classificationDraft?.[question.id])
+        .sort((left, right) => left.prompt.localeCompare(right.prompt));
+}
+
+function countDraftChanges() {
+    if (!classificationDraft || !initialClassificationDraft) {
+        return 0;
     }
-    recommendStatus.textContent = failed
-        ? '推荐中断：已完成的部分建议已保留。'
-        : '推荐完成。每道题旁的「AI建议」只是推荐，采纳与否由你决定；分组永远由你拖拽决定。';
+
+    return Object.keys(classificationDraft).filter((questionId) => classificationDraft[questionId] !== initialClassificationDraft[questionId]).length;
+}
+
+function isClassificationDraftDirty() {
+    return countDraftChanges() > 0;
+}
+
+function applyDraftAssignment(questionId, motherId) {
+    if (!classificationDraft || (motherId && !getMotherTopic(motherId))) {
+        return;
+    }
+
+    classificationDraft = {
+        ...classificationDraft,
+        [questionId]: motherId || null
+    };
+
+    if (motherId) {
+        selectedClassificationTopicId = motherId;
+    }
+
+    renderClassificationDialog();
+}
+
+function renderTopicNavigation(questions) {
+    topicNav.innerHTML = '';
+    MOTHER_TOPICS.forEach((topic) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `topic-nav-btn${selectedClassificationTopicId === topic.id ? ' active' : ''}`;
+        button.dataset.topicId = topic.id;
+        button.dataset.dropMotherId = topic.id;
+        button.innerHTML = `<span>${topic.label}</span><strong>${draftQuestionsByTopic(questions, topic.id).length}</strong>`;
+        button.addEventListener('click', () => {
+            selectedClassificationTopicId = topic.id;
+            renderClassificationDialog();
+        });
+        topicNav.appendChild(button);
+    });
+}
+
+function renderClassificationDialog() {
+    if (!classificationDialog?.open || !classificationDraft) {
+        return;
+    }
+
+    const viewState = currentBankView();
+    const season = getActiveSeason(viewState);
+    const seasonQuestions = getActiveSeasonQuestions(viewState);
+    const selectedTopic = getMotherTopic(selectedClassificationTopicId) || MOTHER_TOPICS[0];
+    if (selectedTopic) {
+        selectedClassificationTopicId = selectedTopic.id;
+    }
+
+    const importedCount = seasonQuestions.filter((question) => question.source !== 'official').length;
+    const localSuggestedCount = seasonQuestions.filter((question) => !question.motherId && getLocalClassification(question)).length;
+    const unclassified = draftPoolQuestions(seasonQuestions);
+
+    dialogImportStep.textContent = season
+        ? `${season.label || season.id} · 共 ${seasonQuestions.length} 题 · 自导入 ${importedCount} · 官方 ${seasonQuestions.length - importedCount}`
+        : '当前还没有可确认的季度。';
+    dialogPreviewStep.textContent = `草稿中已归类 ${seasonQuestions.length - unclassified.length} 题 · 未分类 ${unclassified.length} 题 · 本地建议 ${localSuggestedCount} 题`;
+    dialogDraftStatus.textContent = countDraftChanges()
+        ? `已修改 ${countDraftChanges()} 题，确认前不会保存。`
+        : '还没有改动；现在看到的是当前确认结果加上本地识别草稿。';
+    selectedTopicTitle.textContent = selectedTopic?.label || '未选择母题';
+    selectedTopicDesc.textContent = selectedTopic
+        ? `${selectedTopic.en} · ${selectedTopic.description}`
+        : '从左侧选择一个母题查看草稿。';
+
+    renderTopicNavigation(seasonQuestions);
+
+    topicQuestionList.dataset.dropMotherId = selectedTopic?.id || '';
+    topicQuestionList.innerHTML = '';
+    const topicQuestions = selectedTopic ? draftQuestionsByTopic(seasonQuestions, selectedTopic.id) : [];
+    if (!topicQuestions.length) {
+        const empty = document.createElement('p');
+        empty.className = 'slot-empty';
+        empty.textContent = '这个母题下还没有草稿题目。可以把右侧未分类题拖进来，或用下拉切换。';
+        topicQuestionList.appendChild(empty);
+    } else {
+        topicQuestions.forEach((question) => {
+            topicQuestionList.appendChild(createQuestionCard(question, { draftMotherId: classificationDraft[question.id] || null }));
+        });
+    }
+
+    dialogPoolList.dataset.dropMotherId = '';
+    dialogPoolList.innerHTML = '';
+    dialogPoolCount.textContent = unclassified.length;
+    if (!unclassified.length) {
+        const empty = document.createElement('p');
+        empty.className = 'slot-empty';
+        empty.textContent = '这一季的题目都已经放进草稿分组了。';
+        dialogPoolList.appendChild(empty);
+    } else {
+        unclassified.forEach((question) => {
+            dialogPoolList.appendChild(createQuestionCard(question, { draftMotherId: null }));
+        });
+    }
+}
+
+function openClassificationDialog() {
+    const viewState = syncActiveSeason(false);
+    const seasonQuestions = getActiveSeasonQuestions(viewState);
+    if (!seasonQuestions.length) {
+        return;
+    }
+
+    classificationDraft = createClassificationDraft(seasonQuestions);
+    initialClassificationDraft = { ...classificationDraft };
+    if (!getMotherTopic(selectedClassificationTopicId)) {
+        selectedClassificationTopicId = MOTHER_TOPICS[0]?.id || 'M1';
+    }
+
+    classificationDialog.showModal();
+    renderClassificationDialog();
+}
+
+function closeClassificationDialog(forceDiscard = false) {
+    if (!classificationDialog?.open) {
+        return true;
+    }
+
+    if (!forceDiscard && isClassificationDraftDirty() && !window.confirm('当前分类草稿还没有确认，确定要放弃这些更改吗？')) {
+        return false;
+    }
+
+    classificationDraft = null;
+    initialClassificationDraft = null;
+    clearClassificationDropTarget();
+    classificationDialog.close();
+    return true;
+}
+
+function confirmClassificationDraft() {
+    if (!classificationDraft) {
+        return;
+    }
+
+    const viewState = currentBankView();
+    const seasonQuestions = getActiveSeasonQuestions(viewState);
+    const nextOverrides = { ...questionBankState.classificationOverrides };
+
+    seasonQuestions.forEach((question) => {
+        const draftMotherId = classificationDraft[question.id] || null;
+        const baseMotherId = getBaseMotherId(question.id);
+        if (draftMotherId === baseMotherId) {
+            delete nextOverrides[question.id];
+        } else {
+            nextOverrides[question.id] = draftMotherId;
+        }
+    });
+
+    questionBankState = {
+        ...questionBankState,
+        classificationOverrides: nextOverrides
+    };
+    persistBank();
+    closeClassificationDialog(true);
     renderBank();
-    updateRecommendButton();
+}
+
+function classificationDropElements() {
+    return classificationDialog
+        ? [...classificationDialog.querySelectorAll('[data-drop-mother-id]')]
+        : [];
+}
+
+function clearClassificationDropTarget() {
+    classificationDropElements().forEach((element) => element.classList.remove('is-drop-target'));
+}
+
+function createDragProxy(card) {
+    const proxy = card.cloneNode(true);
+    proxy.classList.add('drag-proxy');
+    proxy.querySelectorAll('button, select').forEach((control) => {
+        control.disabled = true;
+        control.tabIndex = -1;
+    });
+    document.body.appendChild(proxy);
+    return proxy;
+}
+
+function updateDragProxyPosition(state, event) {
+    if (!state.proxy) {
+        return;
+    }
+
+    state.proxy.style.left = `${event.clientX - state.offsetX}px`;
+    state.proxy.style.top = `${event.clientY - state.offsetY}px`;
+}
+
+function resolveClassificationDropTarget(event) {
+    const element = document.elementFromPoint(event.clientX, event.clientY);
+    const dropTarget = element?.closest('[data-drop-mother-id]');
+    if (!dropTarget || !classificationDialog.contains(dropTarget)) {
+        return null;
+    }
+
+    return dropTarget;
+}
+
+function startClassificationDrag(state, event) {
+    state.started = true;
+    state.proxy = createDragProxy(state.card);
+    state.card.classList.add('drag-origin');
+    updateDragProxyPosition(state, event);
+}
+
+function cleanupClassificationDrag() {
+    if (!classificationDrag) {
+        return;
+    }
+
+    classificationDrag.card?.classList.remove('drag-origin');
+    classificationDrag.proxy?.remove();
+    clearClassificationDropTarget();
+    classificationDrag = null;
+}
+
+function handleClassificationPointerDown(event) {
+    if (!classificationDialog?.open || event.button !== 0 || event.target.closest('select, button')) {
+        return;
+    }
+
+    const card = event.target.closest('.draft-question-card');
+    if (!card) {
+        return;
+    }
+
+    const rect = card.getBoundingClientRect();
+    classificationDrag = {
+        questionId: card.dataset.questionId,
+        pointerId: event.pointerId,
+        card,
+        started: false,
+        proxy: null,
+        dropTarget: null,
+        startX: event.clientX,
+        startY: event.clientY,
+        offsetX: event.clientX - rect.left,
+        offsetY: event.clientY - rect.top
+    };
+    card.setPointerCapture?.(event.pointerId);
+}
+
+function handleClassificationPointerMove(event) {
+    if (!classificationDrag || classificationDrag.pointerId !== event.pointerId) {
+        return;
+    }
+
+    const distance = Math.hypot(event.clientX - classificationDrag.startX, event.clientY - classificationDrag.startY);
+    if (!classificationDrag.started && distance < 8) {
+        return;
+    }
+
+    if (!classificationDrag.started) {
+        startClassificationDrag(classificationDrag, event);
+    }
+
+    updateDragProxyPosition(classificationDrag, event);
+    clearClassificationDropTarget();
+    classificationDrag.dropTarget = resolveClassificationDropTarget(event);
+    classificationDrag.dropTarget?.classList.add('is-drop-target');
+    event.preventDefault();
+}
+
+function handleClassificationPointerUp(event) {
+    if (!classificationDrag || classificationDrag.pointerId !== event.pointerId) {
+        return;
+    }
+
+    if (classificationDrag.started && classificationDrag.dropTarget) {
+        applyDraftAssignment(
+            classificationDrag.questionId,
+            classificationDrag.dropTarget.dataset.dropMotherId || null
+        );
+    }
+
+    cleanupClassificationDrag();
+}
+
+function handleClassificationPointerCancel(event) {
+    if (!classificationDrag || classificationDrag.pointerId !== event.pointerId) {
+        return;
+    }
+
+    cleanupClassificationDrag();
 }
 
 importTextBtn.addEventListener('click', () => {
     const text = bankText.value.trim();
-    if (!text) { importStatus.textContent = '先在上方粘贴题目（每行一题）。'; return; }
+    if (!text) {
+        importStatus.textContent = '先在上方粘贴题目（每行一题）。';
+        return;
+    }
     importQuestions(parseTextImport(text), bankSeason.value.trim());
     bankText.value = '';
 });
@@ -784,15 +1334,36 @@ bankFile.addEventListener('change', async () => {
         const text = await file.text();
         const items = file.name.toLowerCase().endsWith('.json') ? parseJSONImport(text) : parseCSVImport(text);
         importQuestions(items, bankSeason.value.trim());
-    } catch (error) { importStatus.textContent = `文件解析失败：${error.message}`; }
+    } catch (error) {
+        importStatus.textContent = `文件解析失败：${error.message}`;
+    }
     bankFile.value = '';
 });
 sampleBankBtn.addEventListener('click', () => {
     importQuestions(SAMPLE_BANK, '');
-    recommendStatus.textContent = '示例已导入（跨越三个季节）。可以点「AI 推荐映射」看看模型怎么建议。';
+    recommendStatus.textContent = '示例已导入到三个季度。切换季度看预览，再打开弹窗确认本季分类。';
 });
 clearBankBtn.addEventListener('click', clearBank);
-recommendBtn.addEventListener('click', recommendAll);
+seasonSelect.addEventListener('change', () => {
+    questionBankState = {
+        ...questionBankState,
+        activeSeasonId: seasonSelect.value || null
+    };
+    persistBank();
+    renderBank();
+});
+openImportModalBtn.addEventListener('click', openClassificationDialog);
+closeClassificationDialogBtn.addEventListener('click', () => closeClassificationDialog());
+cancelClassificationBtn.addEventListener('click', () => closeClassificationDialog());
+confirmClassificationBtn.addEventListener('click', confirmClassificationDraft);
+classificationDialog?.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeClassificationDialog();
+});
+classificationDialog?.addEventListener('pointerdown', handleClassificationPointerDown);
+classificationDialog?.addEventListener('pointermove', handleClassificationPointerMove);
+classificationDialog?.addEventListener('pointerup', handleClassificationPointerUp);
+classificationDialog?.addEventListener('pointercancel', handleClassificationPointerCancel);
 
 categoryButtons.forEach((button) => button.addEventListener('click', () => applyCategory(button.dataset.category)));
 $$('.nav-link').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.viewTarget)));

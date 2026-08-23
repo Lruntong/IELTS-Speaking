@@ -147,8 +147,12 @@
         </section>
 
         <div class="bank-toolbar">
-          <button id="recommendBtn" class="secondary-button" type="button" disabled>AI 推荐映射（仅建议，不改分组）</button>
-          <p id="recommendStatus" class="recommend-status">AI 会为每道题推荐一个格子，并以「AI建议」显示；是否采纳、最终分到哪格，都由你拖拽决定。</p>
+          <label class="form-group bank-season-picker" for="seasonSelect">
+            <span>查看季度</span>
+            <select id="seasonSelect" class="season-select" aria-label="选择要查看的季度"></select>
+          </label>
+          <button id="openImportModalBtn" class="primary-button" type="button" disabled>手动确认本季分类 <span>→</span></button>
+          <p id="recommendStatus" class="recommend-status">本地识别会先生成保守草稿；只有点击「确认分类」，覆盖结果才会写入题库。</p>
         </div>
 
         <section class="slots-board" aria-label="八个固定母题格子">
@@ -158,10 +162,72 @@
               <div><h3>未分配</h3><p class="slot-en">UNASSIGNED · 先放在这里的题</p></div>
               <span id="poolCount" class="slot-count">0</span>
             </div>
-            <p class="slot-desc">点击题目可直接去练习；拖入上方 8 个格子完成分配，也可以拖回这里取消分配。</p>
+            <p class="slot-desc">这里只显示当前季度里还没确认母题的题目。打开弹窗后，可用拖拽或下拉整理草稿。</p>
             <div id="poolList" class="slot-list"></div>
           </div>
         </section>
+
+        <dialog id="classificationDialog" class="classification-dialog" aria-labelledby="classificationDialogTitle">
+          <div class="classification-shell">
+            <div class="classification-header">
+              <div>
+                <p class="eyebrow">CONFIRM CLASSIFICATION</p>
+                <h2 id="classificationDialogTitle">先看本地草稿，再确认本季母题</h2>
+              </div>
+              <button id="closeClassificationDialogBtn" class="icon-button" type="button" aria-label="关闭">×</button>
+            </div>
+
+            <div class="classification-steps">
+              <section class="classification-step">
+                <span class="step-number">01</span>
+                <div>
+                  <p class="eyebrow">IMPORT STEP</p>
+                  <p id="dialogImportStep" class="classification-step-text">导入后，这里会总结当前季度题量与来源。</p>
+                </div>
+              </section>
+              <section class="classification-step">
+                <span class="step-number">02</span>
+                <div>
+                  <p class="eyebrow">PREVIEW STEP</p>
+                  <p id="dialogPreviewStep" class="classification-step-text">本地识别会先生成保守草稿，你再做最后确认。</p>
+                </div>
+              </section>
+            </div>
+
+            <div class="classification-content">
+              <aside class="classification-topics">
+                <p class="classification-side-title">八个母题</p>
+                <div id="topicNav" class="topic-nav" aria-label="母题导航"></div>
+              </aside>
+
+              <section class="classification-main">
+                <div class="classification-main-head">
+                  <div>
+                    <p class="eyebrow">CURRENT TOPIC</p>
+                    <h3 id="selectedTopicTitle">人物－长辈</h3>
+                    <p id="selectedTopicDesc" class="slot-desc">查看和调整当前母题下的草稿题目。</p>
+                  </div>
+                  <p id="dialogDraftStatus" class="classification-draft-status">草稿更改会在确认前一直保留在弹窗里。</p>
+                </div>
+                <div id="topicQuestionList" class="classification-card-list" aria-live="polite"></div>
+              </section>
+
+              <aside class="classification-pool">
+                <div class="slot-head">
+                  <div><h3>未分类池</h3><p class="slot-en">DROP HERE TO CLEAR</p></div>
+                  <span id="dialogPoolCount" class="slot-count">0</span>
+                </div>
+                <p class="slot-desc">把题拖回这里，就是暂时保持未分类；确认前不会写入题库。</p>
+                <div id="dialogPoolList" class="classification-card-list"></div>
+              </aside>
+            </div>
+
+            <div class="classification-footer">
+              <button id="cancelClassificationBtn" class="text-button" type="button">取消</button>
+              <button id="confirmClassificationBtn" class="primary-button" type="button">确认分类 <span>→</span></button>
+            </div>
+          </div>
+        </dialog>
       </section>
 
       <section id="libraryView" class="view-section hidden" aria-labelledby="libraryTitle">
